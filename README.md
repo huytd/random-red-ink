@@ -1,12 +1,18 @@
 # Random Red Ink
 
-Learn Chinese or Japanese while you browse. On English pages, this Chrome extension swaps a random share of words for their translation at your level: HSK for Chinese, JLPT for Japanese. Click a swapped word to see its reading and meanings and hear how it's pronounced.
+Learn Chinese or Japanese while you browse. On English pages, this Chrome extension translates a random share of the sentences you can mostly read at your level (HSK for Chinese, JLPT for Japanese) into real Chinese or Japanese sentences. Click a sentence to hear it and see the English, or click a word in it to see its reading and meanings.
+
+> 今天我想告诉你我的朋友。 The government announced new restrictions on imports last week. 我们早上喜欢吃米饭喝茶。
+>
+> 今日は私の友達について話したいです。 The government announced new restrictions on imports last week. 私たちは朝にご飯を食べてお茶を飲むのが好きです。
+
+At HSK 1 the second sentence stays English: most of its words are above the level. At HSK 4 it's translated too.
+
+Sentences are translated on your computer by Chrome's built-in [Translator API](https://developer.chrome.com/docs/ai/translator-api) (Chrome 138 or later), so page text never leaves the device. There's also a **Words** mode, which swaps single words and keeps the English word order:
 
 > Today I want to 告诉 you about 我的 朋友. We like to 吃 rice and 喝 茶 in the morning.
->
-> Today I want to 話す you about 私の 友達. We like to 食べる rice and 飲む お茶 in the 朝.
 
-With the extension on:
+With the extension on (Words mode):
 
 <img width="1653" height="1258" alt="image" src="https://github.com/user-attachments/assets/f1a9b1a7-b846-48c5-9bdd-babc50e02f80" />
 
@@ -27,35 +33,40 @@ With the extension off:
 | On/off | Turns the extension on or off everywhere. The site switch pauses it for the current site only. |
 | Learn | 中文 Chinese or 日本語 Japanese. |
 | HSK 3.0 / HSK 2.0 | Chinese only: which syllabus to use. HSK 3.0 (2021) has levels 1–6 plus 7–9; HSK 2.0 has levels 1–6. |
-| Level | HSK 1–9 or JLPT N5–N1. Uses words up to and including this level. With **Only words new at this level**, it uses only the words that level introduces. |
-| Replace | The percentage of translatable words that get replaced (1–100%, default 15%). |
+| Level | HSK 1–9 or JLPT N5–N1. Sentences: picks sentences whose words are mostly at or below this level. Words: uses words up to and including this level. With **Only … new at this level**, a sentence also needs a word that level introduces, and word mode uses only those words. |
+| Replace | **Sentences** (default) translates whole sentences; **Words** swaps single words. The slider sets the percentage of readable sentences that get translated (default 30%), or of translatable words that get replaced (default 15%). |
 | 简体 / 繁體 | Chinese only: simplified or traditional characters. |
-| Show pinyin / furigana above words | Shows pinyin over Chinese words, or kana over the kanji of Japanese words (食(た)べる). |
-| Shuffle | Picks a new random set of words on the current page. |
+| Show pinyin / furigana above words | Shows pinyin over Chinese words, or kana over the kanji of Japanese words (食(た)べる). In sentences, it's shown over the words found in the dictionary. |
+| Shuffle | Picks a new random set of sentences or words on the current page. |
 
 Settings sync through your Chrome profile and apply right away to open tabs.
 
+## Sentence card
+
+Clicking a translated sentence opens a card with the sentence, its reading (pinyin or kana, from the words the dictionary knows), a 🔊 button that reads it aloud, the original English, and a **Show English** button that puts the English back, links and formatting included.
+
 ## Word card
 
-Clicking a replaced word (it won't follow the link if the word sits inside one) opens a card with:
+Clicking a word in a translated sentence, or a replaced word in Words mode (it won't follow the link if the word sits inside one), opens a card with:
 
 - the word, plus the other script when it differs (书 / 書)
 - its reading (pinyin with tone marks, or kana) and a 🔊 button that reads it aloud with Chrome's Chinese or Japanese voice (`chrome.tts`, falling back to the Web Speech API)
 - the HSK or JLPT level and up to three meanings
 - a note when the extension added grammar (的/の for possession, a measure word, 最/一番 for "most")
-- the original English word, with a **Show English** button that puts it back
+- in Words mode, the original English word, with a **Show English** button that puts it back; in a sentence, **Whole sentence** (back to the sentence card) and **Show English**
 
 Press Esc or click anywhere else to close the card.
 
 ## How it works
 
+- **Sentences** – each paragraph is split into sentences by [compromise](https://github.com/spencermountain/compromise) (so "Mr. Smith went home." stays one sentence). A sentence is picked when it has 4–30 words and at least 60% of its content words (not grammar words or names) have a translation at your level, found with the word matcher described below; `src/sentences.js` has the rules. Sentences with links, buttons, images, code or line breaks inside are left alone, as replacing them would break those. Picked sentences go one at a time to Chrome's on-device translator (`Translator.create({ sourceLanguage: 'en', targetLanguage: 'zh' | 'zh-Hant' | 'ja' })`). The first time, Chrome has to download the language model, and it only starts a download after a click or key press, so the popup asks you to click anywhere on the page. The translation is split into words with `Intl.Segmenter`, and the words in the HSK or JLPT list become clickable. Japanese verbs and adjectives are found by their stem (飲 of 飲みます is 飲む, 食べ of 食べました is 食べる). Up to 60 sentences per page are translated.
 - **Part of speech** – each paragraph goes through [compromise](https://github.com/spencermountain/compromise) (MIT, `vendor/compromise.js`), an English tagger that runs in the page. It tells the verb in "**Building** apps" from the noun in "the **building**", and it gives each word's base form, so irregular forms like bought, children and went work too. It also flags names and brands (Bill, Apple), phrasal verbs ("gave **up**"), possessives, comparatives and dates, and works out what "they" refers to.
 - **Dictionaries** – each language combines an English-first dictionary, which lists an English word's translations by part of speech and most common sense first, with the target words' own glosses:
   - Chinese, `src/dict-zh.js` from `scripts/build-dict-zh.mjs`: [ECDICT](https://github.com/skywind3000/ECDICT) (water: *n.* 水; *v.* 浇水) and [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary) (11,368 HSK words with levels, pinyin, CC-CEDICT meanings and measure words)
   - Japanese, `src/dict-ja.js` from `scripts/build-dict-ja.mjs`: [EJDict-hand](https://github.com/kujirahand/EJDict) (eat: 『食べる』), [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) for parts of speech and glosses, and the JLPT N5–N1 lists from [open-anki-jlpt-decks](https://github.com/jamsinclair/open-anki-jlpt-decks) (about 8,000 words with readings). Nouns that take する (勉強) also get a verb form (勉強する) for English verbs.
 
   An English word maps to a word in the list when the English-first dictionary gives it for that part of speech, ideally confirmed by the word's own gloss. CC-CEDICT can add a word only if this English word is the Chinese word's main meaning and ECDICT doesn't contradict it. If the best translation is above your level, the matcher falls back only to close synonyms (冷 for "cold" instead of 寒冷). Otherwise it leaves the word in English: "plant" never becomes 工厂 (a factory). `scripts/overrides.mjs` holds the remaining hand fixes, per part of speech if needed (`show:n` → 节目).
-- **Grammar** – the Chinese has to read correctly wherever Chinese words meet:
+- **Grammar (Words mode)** – the Chinese has to read correctly wherever Chinese words meet:
   - question words keep Chinese order: "How do I use AI?" → 我 怎么 用 AI?
   - numbers get the noun's measure word: three books → 三本 书, two cats → 两只 猫
   - possessives get 的/の: my friend → 我的 朋友 / 私の 友達, people's → 人的
@@ -84,9 +95,13 @@ After editing files, click the reload button on the extension in `chrome://exten
 
 ## Known limitations
 
+- Sentences need Chrome's built-in Translator API (Chrome 138 or later on desktop). Where it's missing, or Chrome can't translate into the chosen language on the device, the popup says so; switch to **Words**.
+- Machine translation can use words above your level even when the English is simple. The level decides which sentences are picked, not which words the translator chooses; click a word to see its level.
+- Sentences that contain a link stay English, so link-heavy pages (like Wikipedia) get fewer translations.
+
 - The tagger tells parts of speech apart, but not senses within one part of speech: "restrictions were lifted" still gets 提高 (raise) instead of 解除 (remove). Add a fix to `scripts/overrides-zh.mjs` or `scripts/overrides-ja.mjs` and rebuild.
 - The tagger sometimes gets a part of speech wrong, especially in lists: in "read books, watch a movie, and walk to school" it takes *walk* for a noun (散歩, "a stroll").
-- English word order is kept outside the rules above, so the result is English with Chinese words in it, not Chinese sentences.
+- In Words mode, English word order is kept outside the rules above, so the result is English with Chinese words in it, not Chinese sentences.
 - Pronunciation needs a Chinese voice. Chrome on Windows, macOS and ChromeOS includes one; on Linux you may need to install one (for example through speech-dispatcher).
 
 ## Data licenses

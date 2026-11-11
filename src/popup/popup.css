@@ -83,6 +83,7 @@ button { font: inherit; color: inherit; }
 .levels button:hover { border-color: var(--accent); }
 .levels button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .hint { margin: 8px 0 10px; color: var(--muted); font-size: 12px; }
+#mode-hint { margin-bottom: 0; }
 
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { margin: 0; accent-color: var(--accent); width: 15px; height: 15px; }

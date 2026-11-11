@@ -24,8 +24,38 @@
   letter-spacing: 0;
   text-transform: none;
 }
+/* Translated sentences: the sentence is tinted, and its words light up on hover. */
+.rc-sentence {
+  cursor: pointer;
+  color: inherit;
+  background: rgba(200, 64, 42, 0.07);
+  border-bottom: 1.5px solid rgba(200, 64, 42, 0.45);
+  border-radius: 3px;
+  padding: 0 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 120ms ease;
+}
+.rc-sentence:hover,
+.rc-sentence.rc-active {
+  background: rgba(200, 64, 42, 0.13);
+}
+.rc-sentence .rc-word {
+  background: none;
+  border-bottom: none;
+  padding: 0;
+  border-radius: 2px;
+}
+.rc-sentence .rc-word:hover,
+.rc-sentence .rc-word.rc-active {
+  background: rgba(200, 64, 42, 0.22);
+}
 @media (prefers-color-scheme: dark) {
   .rc-word { background: rgba(255, 122, 92, 0.16); border-bottom-color: #ff7a5c; }
   .rc-word:hover, .rc-word.rc-active { background: rgba(255, 122, 92, 0.3); }
   .rc-word rt { color: #ff7a5c; }
+  .rc-sentence { background: rgba(255, 122, 92, 0.1); border-bottom-color: rgba(255, 122, 92, 0.55); }
+  .rc-sentence:hover, .rc-sentence.rc-active { background: rgba(255, 122, 92, 0.18); }
+  .rc-sentence .rc-word { background: none; }
+  .rc-sentence .rc-word:hover, .rc-sentence .rc-word.rc-active { background: rgba(255, 122, 92, 0.3); }
 }

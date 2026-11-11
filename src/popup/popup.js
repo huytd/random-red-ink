@@ -30,12 +30,16 @@ function levelInfo() {
     system: settings.system,
     max: MAX_LEVEL[settings.system],
     label: (n) => (n === 7 ? '7–9' : String(n)),
-    range: (n) => `levels 1–${n === 7 ? '9' : n}`,
+    range: (n) => (n === 1 ? 'level 1' : `levels 1–${n === 7 ? '9' : n}`),
   };
 }
 
+// The slider's setting: sentences and words each keep their own share.
+const frequencyKey = () => (settings.mode === 'sentence' ? 'sentenceFrequency' : 'frequency');
+
 function render() {
   const ja = settings.language === 'ja';
+  const sentences = settings.mode === 'sentence';
   document.body.classList.toggle('off', !settings.enabled);
   $('enabled').checked = settings.enabled;
   setRadio($('language'), settings.language);
@@ -44,7 +48,9 @@ function render() {
   $('system').hidden = ja;
   $('script-row').hidden = ja;
   $('reading-label').textContent = ja ? 'Show furigana above words' : 'Show pinyin above words';
-  $('footer').textContent = `Click a ${LANGUAGE_NAMES[settings.language]} word on the page to hear it and see its meaning.`;
+  $('footer').textContent = sentences
+    ? 'Click a sentence to hear it and see the English, or a word in it for its meaning.'
+    : `Click a ${LANGUAGE_NAMES[settings.language]} word on the page to hear it and see its meaning.`;
 
   const info = levelInfo();
   const level = settings[info.key];
@@ -67,13 +73,27 @@ function render() {
   const sizes = WORDS[info.system];
   const n = level - 1;
   const added = sizes[n] - (n ? sizes[n - 1] : 0);
-  $('level-hint').textContent = settings.onlyLevel
-    ? `Uses the ${added.toLocaleString()} words introduced at this level.`
-    : `Uses ${sizes[n].toLocaleString()} words, ${info.range(level)}.`;
+  if (sentences) {
+    $('level-hint').textContent = settings.onlyLevel
+      ? `Picks sentences mostly made of the ${sizes[n].toLocaleString()} words up to this level, with at least one of the ${added.toLocaleString()} it introduces.`
+      : `Picks sentences mostly made of the ${sizes[n].toLocaleString()} words of ${info.range(level)}.`;
+  } else {
+    $('level-hint').textContent = settings.onlyLevel
+      ? `Uses the ${added.toLocaleString()} words introduced at this level.`
+      : `Uses ${sizes[n].toLocaleString()} words, ${info.range(level)}.`;
+  }
   $('only-level').checked = settings.onlyLevel;
+  $('only-level-label').textContent = sentences ? 'Only sentences with a word new at this level' : 'Only words new at this level';
 
-  $('frequency').value = settings.frequency;
-  $('frequency-value').textContent = `${settings.frequency}%`;
+  setRadio($('mode'), settings.mode);
+  $('frequency').value = settings[frequencyKey()];
+  $('frequency-value').textContent = `${settings[frequencyKey()]}%`;
+  $('frequency-label').textContent = sentences ? 'Share of readable sentences' : 'Share of words';
+  $('range-few').textContent = sentences ? 'A few sentences' : 'A few words';
+  $('range-most').textContent = sentences ? 'Most sentences' : 'Most words';
+  $('mode-hint').textContent = sentences
+    ? 'Translates whole sentences with Chrome’s built-in translator, on your device.'
+    : 'Swaps single words for their translation, keeping the English word order.';
   $('show-pinyin').checked = settings.showPinyin;
 
   if (host) $('site-enabled').checked = !settings.disabledSites.includes(host);
@@ -86,9 +106,25 @@ async function update(patch) {
   setTimeout(refreshStatus, 600);
 }
 
+// What the page's translator is doing, for sentence mode: null when it's ready.
+function translatorStatus(s) {
+  const name = LANGUAGE_NAMES[settings.language];
+  switch (s.translator) {
+    case 'checking': return 'Starting the translator…';
+    case 'needs-click': return `Click anywhere on the page to download Chrome’s ${name} translator (one time).`;
+    case 'downloading': return `Downloading the ${name} translator… ${Math.round((s.progress || 0) * 100)}%`;
+    case 'unsupported': return 'Sentences need Chrome’s built-in translator (Chrome 138 or later). Switch to Words to use this browser.';
+    case 'unavailable': return `Chrome can’t translate English to ${name} on this device. Switch to Words.`;
+    case 'error': return 'The translator didn’t start. Reload the page, or switch to Words.';
+    default: return null;
+  }
+}
+
+let statusTimer = 0;
 async function refreshStatus() {
   const site = $('site');
   if (!tab) return;
+  clearTimeout(statusTimer);
   try {
     const s = await chrome.tabs.sendMessage(tab.id, { type: 'rc-status' });
     host = s.host;
@@ -99,7 +135,15 @@ async function refreshStatus() {
     if (!settings.enabled) $('site-status').textContent = 'Paused everywhere';
     else if (settings.disabledSites.includes(host)) $('site-status').textContent = 'Paused on this site';
     else if (!s.english) $('site-status').textContent = 'This page isn’t in English';
-    else $('site-status').textContent = `${s.count} word${s.count === 1 ? '' : 's'} in ${LANGUAGE_NAMES[settings.language]}`;
+    else if (settings.mode === 'sentence' && translatorStatus(s)) {
+      $('site-status').textContent = translatorStatus(s);
+      if (['checking', 'needs-click', 'downloading'].includes(s.translator)) statusTimer = setTimeout(refreshStatus, 1000);
+    } else {
+      const unit = settings.mode === 'sentence' ? 'sentence' : 'word';
+      $('site-status').textContent = `${s.count} ${unit}${s.count === 1 ? '' : 's'} in ${LANGUAGE_NAMES[settings.language]}`;
+      // Sentences arrive one by one from the translator.
+      if (settings.mode === 'sentence' && s.running) statusTimer = setTimeout(refreshStatus, 1500);
+    }
   } catch {
     site.classList.add('unavailable');
     $('site-host').textContent = 'This page';
@@ -126,6 +170,7 @@ async function main() {
     if (b) update({ system: b.dataset.value, level: Math.min(settings.level, MAX_LEVEL[b.dataset.value]) });
   });
   bindRadio($('language'), 'language');
+  bindRadio($('mode'), 'mode');
   bindRadio($('script'), 'script');
   $('levels').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-value]');
@@ -134,7 +179,7 @@ async function main() {
   $('only-level').addEventListener('change', (e) => update({ onlyLevel: e.target.checked }));
   $('show-pinyin').addEventListener('change', (e) => update({ showPinyin: e.target.checked }));
   $('frequency').addEventListener('input', (e) => { $('frequency-value').textContent = `${e.target.value}%`; });
-  $('frequency').addEventListener('change', (e) => update({ frequency: Number(e.target.value) }));
+  $('frequency').addEventListener('change', (e) => update({ [frequencyKey()]: Number(e.target.value) }));
   $('site-enabled').addEventListener('change', (e) => {
     if (!host) return;
     const others = settings.disabledSites.filter((h) => h !== host);

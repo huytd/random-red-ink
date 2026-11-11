@@ -53,17 +53,25 @@
     <p class="hint" id="level-hint"></p>
     <label class="check">
       <input type="checkbox" id="only-level">
-      Only words new at this level
+      <span id="only-level-label">Only words new at this level</span>
     </label>
   </section>
 
   <section>
     <div class="label-row">
-      <h2><label for="frequency">Replace</label></h2>
+      <h2>Replace</h2>
+      <div class="seg" role="radiogroup" aria-label="What to replace" id="mode">
+        <button type="button" role="radio" data-value="sentence">Sentences</button>
+        <button type="button" role="radio" data-value="word">Words</button>
+      </div>
+    </div>
+    <div class="label-row">
+      <label for="frequency" class="muted" id="frequency-label">Share of sentences</label>
       <output id="frequency-value" for="frequency"></output>
     </div>
     <input type="range" id="frequency" min="1" max="100" step="1">
-    <div class="range-ends"><span>A few words</span><span>Most words</span></div>
+    <div class="range-ends"><span id="range-few">A few</span><span id="range-most">Most</span></div>
+    <p class="hint" id="mode-hint"></p>
   </section>
 
   <section>

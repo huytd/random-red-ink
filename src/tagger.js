@@ -45,15 +45,19 @@
     return info;
   }
 
-  // [{ start, end, ...describe() }] for the words in text, in order.
+  // [{ start, end, ...describe() }] for the words in text, in order. The array's
+  // sentences property lists the sentences as [{ start, end }], so "Mr. Smith went home."
+  // stays one sentence.
   function tag(text) {
     const nlp = root.nlp;
     if (!nlp) return null;
     const doc = nlp(text);
     doc.compute('root');
     const out = [];
+    out.sentences = [];
     const byStart = new Map();
     for (const sentence of doc.json({ offset: true })) {
+      if (sentence.offset) out.sentences.push({ start: sentence.offset.start, end: sentence.offset.start + sentence.offset.length });
       for (const term of sentence.terms) {
         if (!term.offset || !term.offset.length) continue; // implied words: don't -> do not
         const info = { start: term.offset.start, end: term.offset.start + term.offset.length, ...describe(term) };

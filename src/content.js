@@ -1,17 +1,20 @@
-// Replaces a random share of English words on the page with their Chinese (HSK) or
-// Japanese (JLPT) translation; clicking one opens a card with the reading, audio and
-// meanings.
+// Translates a random share of the English sentences a learner can mostly read at their
+// HSK or JLPT level into Chinese or Japanese, with Chrome's on-device translator (or, in
+// word mode, swaps single words for their translation). Clicking a sentence or a word in it
+// opens a card with the reading, audio and meanings.
 (() => {
   'use strict';
   if (globalThis.__randomRedInkLoaded) return;
   globalThis.__randomRedInkLoaded = true;
 
   const { createLookup, findMatches, LEVEL_COL } = globalThis.RC_MATCHER;
+  const sentences = globalThis.RC_SENTENCES;
   const { loadSettings } = globalThis.RC_SETTINGS;
   let dict = null; // RC_DICTS[language], injected on demand by the background worker
   const tagger = globalThis.RC_TAGGER;
 
-  const MAX_REPLACEMENTS = 400; // per page, keeps long pages readable and fast
+  const MAX_REPLACEMENTS = 400; // words per page, keeps long pages readable and fast
+  const MAX_SENTENCES = 60; // sentences per page; each one is a call to the translator
   const CHUNK_MS = 12; // work per idle slice
   const MAX_BLOCK_TEXT = 4000; // characters tagged together
   // Text inside one of these is tagged as a unit, so "<b>Building</b> apps" still reads
@@ -25,11 +28,14 @@
     'script', 'style', 'noscript', 'template', 'textarea', 'input', 'select', 'option', 'button',
     'code', 'pre', 'kbd', 'samp', 'var', 'svg', 'math', 'canvas', 'iframe', 'title', 'head',
     '[contenteditable]:not([contenteditable="false"])', '[translate="no"]', '.notranslate',
-    '.rc-word', '.rc-group', '#random-red-ink-popover',
+    '.rc-word', '.rc-group', '.rc-sentence', '#random-red-ink-popover',
   ].join(',');
 
   let settings = null;
   let lookup = null;
+  let lookups = null; // sentence mode: { all, fresh } for RC_SENTENCES.readable
+  let wordIdx = null; // sentence mode: dictionary words by spelling, for RC_SENTENCES.segment
+  let stems = null; // and Japanese stems
   let scanned = new WeakSet(); // text nodes already considered
   const created = new WeakSet(); // text nodes this script made, safe to merge back together
   let count = 0;
@@ -81,15 +87,18 @@
   const traditional = () => dict.lang === 'zh' && settings.script === 'traditional';
   const langTag = () => (dict.lang === 'ja' ? 'ja' : traditional() ? 'zh-Hant' : 'zh-Hans');
 
+  // part.surface: the word as written in a translated sentence, which for a conjugated
+  // Japanese word is only its stem (飲 of 飲みます for 飲む).
   function makeWord(part) {
     const [simp, trad, pinyin] = dict.words[part.id];
-    const word = traditional() ? trad : simp;
+    const word = part.surface || (traditional() ? trad : simp);
     const hanzi = (part.prefix || '') + word + (part.suffix || '');
     const span = document.createElement('span');
     span.className = 'rc-word';
     span.lang = langTag();
     span.dataset.rcId = part.id;
-    span.dataset.rcOrig = part.orig;
+    if (part.orig) span.dataset.rcOrig = part.orig;
+    if (part.surface) span.dataset.rcSurface = part.surface;
     if (part.suffix) {
       span.dataset.rcSuffix = part.suffix;
       span.dataset.rcSuffixPinyin = part.suffixPinyin || '';
@@ -101,7 +110,9 @@
     // Readings above the word: pinyin over the whole word, or furigana over just the
     // kanji of a Japanese word: 食(た)べる, お茶(ちゃ), 私(わたし)の.
     if (settings.showPinyin && pinyin !== word) {
-      if (dict.lang === 'ja') {
+      if (dict.lang === 'ja' && word !== simp && simp.startsWith(word)) {
+        span.append(...furigana(simp, pinyin, word.length)); // a stem: 食べ of 食べる
+      } else if (dict.lang === 'ja') {
         span.append(...furigana(part.prefix || '', part.prefixPinyin || ''), ...furigana(word, pinyin), part.suffix || '');
       } else {
         span.append(ruby(hanzi, [part.prefixPinyin, pinyin, part.suffixPinyin].filter(Boolean).join(' ')));
@@ -122,9 +133,20 @@
 
   // Nodes for a Japanese word with its reading over the kanji only: the kana it starts and
   // ends with (お茶 おちゃ, 食べる たべる) are already the reading, so they go without.
+  // length: how much of the word to show, for a stem (食べ of 食べる).
   const kana = (c) => /[\p{Script=Hiragana}\p{Script=Katakana}ー]/u.test(c);
-  function furigana(word, reading) {
+  function furigana(word, reading, length = word.length) {
     if (!word) return [];
+    if (length < word.length) {
+      const nodes = furigana(word, reading);
+      let cut = word.length - length; // stems drop kana, which are plain text at the end
+      while (cut > 0 && typeof nodes[nodes.length - 1] === 'string') {
+        const last = nodes.pop();
+        if (last.length > cut) nodes.push(last.slice(0, last.length - cut));
+        cut -= Math.min(cut, last.length);
+      }
+      return nodes;
+    }
     if (word === reading || ![...word].some((c) => !kana(c))) return [word];
     let pre = 0;
     while (pre < word.length && kana(word[pre]) && word[pre] === reading[pre]) pre++;
@@ -212,6 +234,7 @@
 
   // Tags a block's text in one go and processes each of its text nodes with its share.
   function processGroup(group) {
+    if (settings.mode === 'sentence') return processSentences(group);
     const texts = group.nodes.map((n) => n.nodeValue);
     let tags = null;
     try {
@@ -243,10 +266,236 @@
     const step = () => {
       if (!running || run !== mine) return;
       const until = performance.now() + CHUNK_MS;
-      while (i < groups.length && performance.now() < until) processGroup(groups[i++]);
-      if (i < groups.length && count < MAX_REPLACEMENTS) idle(step);
+      while (i < groups.length && performance.now() < until && !full()) processGroup(groups[i++]);
+      if (i < groups.length && !full()) idle(step);
     };
     step();
+  }
+
+  const full = () => (settings.mode === 'sentence' ? count + jobs.length >= MAX_SENTENCES : count >= MAX_REPLACEMENTS);
+
+  // ---- Sentences -------------------------------------------------------------
+
+  // Sentences that contain one of these stay English: links and controls would stop
+  // working, and images or line breaks would be lost.
+  const BLOCKERS = 'a, img, picture, svg, video, audio, iframe, input, button, select, textarea, br, code, kbd, .rc-word, .rc-sentence';
+  const originals = new WeakMap(); // .rc-sentence -> the English it replaced (DocumentFragment)
+  let jobs = []; // { range, text } waiting for the translator, in page order
+  let pumping = false;
+  const squash = (s) => s.replace(/\s+/g, '');
+
+  // Picks the readable sentences in a block and queues them for translation. A sentence
+  // can run across several text nodes ("I <b>really</b> like tea."), so each is a Range.
+  function processSentences(group) {
+    for (const n of group.nodes) scanned.add(n);
+    const texts = group.nodes.map((n) => n.nodeValue);
+    const joined = texts.join(' ');
+    let tags = null;
+    try {
+      tags = tagger ? tagger.tag(joined) : null;
+    } catch {
+      tags = null;
+    }
+    if (!tags?.sentences) return;
+    const starts = [];
+    let offset = 0;
+    for (const t of texts) {
+      starts.push(offset);
+      offset += t.length + 1;
+    }
+    const nodeAt = (pos) => {
+      let k = starts.length - 1;
+      while (k > 0 && starts[k] > pos) k--;
+      return k;
+    };
+    for (const sentence of tags.sentences) {
+      if (full()) break;
+      let { start, end } = sentence;
+      while (start < end && /\s/.test(joined[start])) start++;
+      while (end > start && /\s/.test(joined[end - 1])) end--;
+      const text = joined.slice(start, end);
+      const mine = tags.filter((t) => t.start >= start && t.end <= end).map((t) => ({ ...t, start: t.start - start, end: t.end - start }));
+      if (!sentences.readable(text, mine, lookups)) continue;
+      if (Math.random() * 100 >= settings.sentenceFrequency) continue;
+      const a = nodeAt(start);
+      const b = nodeAt(end - 1);
+      const range = document.createRange();
+      try {
+        range.setStart(group.nodes[a], start - starts[a]);
+        range.setEnd(group.nodes[b], end - starts[b]);
+      } catch {
+        continue;
+      }
+      // The page's own text: the joined text has a space between nodes ("I <b>really</b>").
+      if (safeRange(range, text)) jobs.push({ range, text: range.toString().replace(/\s+/g, ' ').trim() });
+    }
+    pump();
+  }
+
+  // True when range still holds just this sentence and nothing that replacing it would break.
+  function safeRange(range, text) {
+    if (!range.startContainer.isConnected || squash(range.toString()) !== squash(text)) return false;
+    const common = range.commonAncestorContainer;
+    const el = common.nodeType === Node.ELEMENT_NODE ? common : common.parentElement;
+    if (!el || el.closest('a, [role="button"], [role="link"], .rc-sentence, .rc-word') || skippedElement(el)) return false;
+    return !range.cloneContents().querySelector(BLOCKERS);
+  }
+
+  // Translates the queued sentences one at a time and puts each translation in the page.
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
+    const mine = run;
+    try {
+      while (jobs.length && running && run === mine) {
+        const job = jobs.shift();
+        let translated = '';
+        try {
+          translated = (await translate(job.text)).trim();
+        } catch {
+          continue;
+        }
+        if (!running || run !== mine) break;
+        if (translated && count < MAX_SENTENCES) replaceSentence(job, translated);
+      }
+    } finally {
+      pumping = false;
+    }
+    if (running && jobs.length) pump(); // queued by a restart while this one was finishing
+  }
+
+  function replaceSentence({ range, text }, translated) {
+    if (!safeRange(range, text)) return; // the page changed in the meantime
+    if (observer) onMutations(observer.takeRecords());
+    const wrap = makeSentence(translated, text);
+    const english = range.extractContents();
+    range.insertNode(wrap);
+    for (const n of [wrap.previousSibling, wrap.nextSibling]) if (n?.nodeType === Node.TEXT_NODE) scanned.add(n);
+    observer?.takeRecords(); // the changes above are ours
+    originals.set(wrap, english);
+    count++;
+  }
+
+  function makeSentence(translated, english) {
+    const wrap = document.createElement('span');
+    wrap.className = 'rc-sentence';
+    wrap.lang = langTag();
+    wrap.dataset.rcOrig = english;
+    wrap.dataset.rcText = translated;
+    for (const part of sentences.segment(translated, dict.lang, wordIdx, stems)) {
+      wrap.append(part.id === undefined ? part.text : makeWord({ id: part.id, surface: part.text }));
+    }
+    return wrap;
+  }
+
+  // Puts the English sentence back as it was, links and formatting included.
+  function restoreSentence(wrap) {
+    const english = originals.get(wrap);
+    originals.delete(wrap);
+    if (!english) return wrap.remove();
+    const walker = document.createTreeWalker(english, NodeFilter.SHOW_TEXT);
+    for (let n; (n = walker.nextNode()); ) scanned.add(n);
+    wrap.replaceWith(english);
+  }
+
+  // The sentence's reading, from its dictionary words: pinyin, or kana for Japanese.
+  function sentenceReading(wrap) {
+    const ja = dict.lang === 'ja';
+    const parts = [];
+    for (const n of wrap.childNodes) {
+      if (n.nodeType === Node.ELEMENT_NODE && n.classList.contains('rc-word')) {
+        const [simp, , reading] = dict.words[Number(n.dataset.rcId)];
+        const surface = n.dataset.rcSurface || simp;
+        parts.push(ja ? reading.slice(0, reading.length - (simp.length - surface.length)) : reading);
+      } else {
+        parts.push(n.textContent);
+      }
+    }
+    return ja ? parts.join('') : parts.join(' ').replace(/\s+([，。！？、；：,.!?”」）)])/g, '$1').replace(/\s+/g, ' ').trim();
+  }
+
+  // ---- Translator ------------------------------------------------------------
+
+  // Chrome's built-in Translator API (Chrome 138+) translates on the device, so page text
+  // never leaves the computer. Its language model is downloaded once, and starting that
+  // download needs a click or key press on the page.
+  let translatorState = 'off'; // 'off' | 'checking' | 'needs-click' | 'downloading' | 'ready' | 'unsupported' | 'unavailable' | 'error'
+  let downloadProgress = 0;
+  let translator = null; // { target, instance }
+  let gesture = null; // listener waiting for a click to start the download
+  const translations = new Map(); // English -> translation, for Shuffle
+  const GESTURES = ['mousedown', 'pointerup', 'keydown', 'touchend'];
+
+  const targetLanguage = (s) => (s.language === 'ja' ? 'ja' : s.script === 'traditional' ? 'zh-Hant' : 'zh');
+
+  function cancelGesture() {
+    if (!gesture) return;
+    for (const type of GESTURES) window.removeEventListener(type, gesture, true);
+    gesture.resolve(false);
+    gesture = null;
+  }
+
+  // Resolves to true once a translator for target is ready, or false if there can't be one.
+  async function ensureTranslator(target) {
+    cancelGesture();
+    if (translator?.target === target) return true;
+    translator?.instance.destroy?.();
+    translator = null;
+    translations.clear();
+    const T = globalThis.Translator;
+    if (typeof T?.create !== 'function') {
+      translatorState = 'unsupported';
+      return false;
+    }
+    const options = { sourceLanguage: 'en', targetLanguage: target };
+    translatorState = 'checking';
+    let availability;
+    try {
+      availability = await T.availability(options);
+    } catch {
+      translatorState = 'error';
+      return false;
+    }
+    if (availability === 'unavailable') {
+      translatorState = 'unavailable';
+      return false;
+    }
+    if (availability === 'available') return createTranslator(T, options);
+    translatorState = 'needs-click';
+    return new Promise((resolve) => {
+      const listener = () => {
+        gesture.resolve = () => {};
+        cancelGesture();
+        createTranslator(T, options).then(resolve);
+      };
+      listener.resolve = resolve;
+      gesture = listener;
+      for (const type of GESTURES) window.addEventListener(type, gesture, true);
+    });
+  }
+
+  async function createTranslator(T, options) {
+    translatorState = 'downloading';
+    downloadProgress = 0;
+    try {
+      const instance = await T.create({
+        ...options,
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => { downloadProgress = e.loaded; });
+        },
+      });
+      translator = { target: options.targetLanguage, instance };
+      translatorState = 'ready';
+      return true;
+    } catch {
+      translatorState = 'error';
+      return false;
+    }
+  }
+
+  async function translate(text) {
+    if (!translations.has(text)) translations.set(text, await translator.instance.translate(text));
+    return translations.get(text);
   }
 
   const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 500 }) : setTimeout(fn, 16));
@@ -255,22 +504,36 @@
     running = true;
     run++;
     const ja = settings.language === 'ja';
-    lookup = createLookup(dict, { system: ja ? 'jlpt' : settings.system, level: ja ? settings.jlptLevel : settings.level, onlyLevel: settings.onlyLevel });
+    const system = ja ? 'jlpt' : settings.system;
+    const level = ja ? settings.jlptLevel : settings.level;
+    lookup = createLookup(dict, { system, level, onlyLevel: settings.onlyLevel });
+    if (settings.mode === 'sentence') {
+      // A sentence is readable when most of its words are at or below the level; with
+      // "only new words", it also needs a word introduced at the level.
+      lookups = {
+        all: createLookup(dict, { system, level, onlyLevel: false }),
+        fresh: settings.onlyLevel ? lookup : null,
+      };
+      wordIdx = sentences.wordIndex(dict, LEVEL_COL[system], traditional() ? 1 : 0);
+      stems = ja ? sentences.stemIndex(dict, LEVEL_COL[system]) : null;
+    }
     enqueue(document.body);
-    observer = new MutationObserver((records) => {
-      for (const r of records) {
-        if (r.type === 'characterData') {
-          scanned.delete(r.target);
-          enqueue(r.target);
-        } else {
-          for (const n of r.addedNodes) {
-            const ours = n.nodeType === Node.ELEMENT_NODE && (n.classList.contains('rc-word') || n.classList.contains('rc-group'));
-            if (!ours && !scanned.has(n)) enqueue(n);
-          }
+    observer = new MutationObserver(onMutations);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }
+
+  function onMutations(records) {
+    for (const r of records) {
+      if (r.type === 'characterData') {
+        scanned.delete(r.target);
+        enqueue(r.target);
+      } else {
+        for (const n of r.addedNodes) {
+          const ours = n.nodeType === Node.ELEMENT_NODE && n.matches('.rc-word, .rc-group, .rc-sentence');
+          if (!ours && !scanned.has(n)) enqueue(n);
         }
       }
-    });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
   }
 
   function stop() {
@@ -278,7 +541,9 @@
     observer?.disconnect();
     observer = null;
     queue.length = 0;
+    jobs = [];
     closePopover();
+    for (const el of document.querySelectorAll('.rc-sentence')) restoreSentence(el);
     for (const el of document.querySelectorAll('.rc-group, .rc-word')) if (el.isConnected) restoreWord(el);
     count = 0;
     scanned = new WeakSet();
@@ -326,12 +591,18 @@
     stop();
     settings = next;
     dict = nextDict;
-    if (dict) start();
+    if (!dict) return;
+    if (settings.mode === 'word') {
+      cancelGesture();
+      translatorState = 'off';
+      return start();
+    }
+    if (await ensureTranslator(targetLanguage(settings)) && mine === applying) start();
   }
 
   // ---- Popover ---------------------------------------------------------------
 
-  let pop = null; // { host, card, word }
+  let pop = null; // { host, card, word }: word is the .rc-word or .rc-sentence it's for
 
   const POPOVER_CSS = `
     :host { all: initial; }
@@ -363,6 +634,12 @@
     .foot b { color: var(--fg); font-weight: 600; }
     .show-en { margin-left: auto; border: none; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 0; }
     .show-en:hover { text-decoration: underline; }
+    .foot .link { margin-left: 0; }
+    .card.wide { width: 360px; }
+    .sentence { font: 500 20px/1.5 "PingFang SC", "Hiragino Sans", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+    .row.top { align-items: flex-start; }
+    .reading { margin-top: 4px; font-size: 14px; color: var(--accent); }
+    .english { margin: 8px 0 0; color: var(--fg); }
   `;
 
   const SPEAKER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
@@ -374,23 +651,68 @@
     return e;
   }
 
-  function showPopover(word) {
+  function speakButton(text) {
+    const speak = el('button', 'speak');
+    speak.type = 'button';
+    speak.title = 'Listen';
+    speak.setAttribute('aria-label', 'Listen to pronunciation');
+    speak.innerHTML = SPEAKER_SVG;
+    speak.addEventListener('click', () => say(text));
+    return speak;
+  }
+
+  function linkButton(text, cls, onClick) {
+    const b = el('button', cls, text);
+    b.type = 'button';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  // Opens a card for target (a word or sentence) built from children.
+  function openCard(target, label, children, cls = '') {
     closePopover();
+    const host = el('div');
+    host.id = 'random-red-ink-popover';
+    const root = host.attachShadow({ mode: 'open' });
+    const style = el('style');
+    style.textContent = POPOVER_CSS;
+    const card = el('div', `card ${cls}`.trim());
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', label);
+    card.append(...children);
+    root.append(style, card);
+    document.documentElement.append(host);
+    pop = { host, card, word: target };
+    target.classList.add('rc-active');
+    position();
+    window.addEventListener('scroll', position, true);
+    window.addEventListener('resize', position);
+  }
+
+  function showSentence(wrap) {
+    const text = wrap.dataset.rcText;
+    const top = el('div', 'row top');
+    const sentence = el('span', 'sentence', text);
+    sentence.lang = langTag();
+    top.append(sentence, speakButton(text));
+    const reading = sentenceReading(wrap);
+    const foot = el('div', 'foot');
+    foot.append(el('span', null, 'Translated on your device'), linkButton('Show English', 'show-en', () => {
+      closePopover();
+      restoreSentence(wrap);
+      count--;
+    }));
+    openCard(wrap, text, [top, ...(reading && reading !== text ? [el('div', 'reading', reading)] : []), el('p', 'english', wrap.dataset.rcOrig), foot], 'wide');
+  }
+
+  function showPopover(word) {
     const id = Number(word.dataset.rcId);
     const [simp, trad, pinyin, , , meanings] = dict.words[id];
     const ja = dict.lang === 'ja';
     const hanzi = traditional() ? trad : simp;
     const other = traditional() ? simp : trad;
     const level = dict.words[id][LEVEL_COL[ja ? 'jlpt' : settings.system]];
-
-    const host = el('div');
-    host.id = 'random-red-ink-popover';
-    const root = host.attachShadow({ mode: 'open' });
-    const style = el('style');
-    style.textContent = POPOVER_CSS;
-    const card = el('div', 'card');
-    card.setAttribute('role', 'dialog');
-    card.setAttribute('aria-label', `${hanzi} ${pinyin}`);
+    const inSentence = word.closest('.rc-sentence');
 
     const suffix = word.dataset.rcSuffix || '';
     const prefix = word.dataset.rcPrefix || '';
@@ -399,19 +721,13 @@
     h.lang = langTag();
     top.append(h);
     if (other !== hanzi) top.append(el('span', 'alt', prefix + other + suffix));
-    const speak = el('button', 'speak');
-    speak.type = 'button';
-    speak.title = 'Listen';
-    speak.setAttribute('aria-label', 'Listen to pronunciation');
-    speak.innerHTML = SPEAKER_SVG;
-    speak.addEventListener('click', () => say(prefix + simp + suffix));
-    top.append(speak);
+    top.append(speakButton(prefix + simp + suffix));
 
     const list = el('ol');
     for (const m of meanings.split(' | ')) list.append(el('li', null, m));
     // Grammar the extension added: 我的 / 私の "my", 三本 "three (books)", 最高 / 一番高い
     // "highest".
-    const english = word.dataset.rcOrig.toLowerCase();
+    const english = (word.dataset.rcOrig || '').toLowerCase();
     const { grammar: g } = dict;
     let note = '';
     if (suffix === g.possessive[0]) note = `${suffix} ${word.dataset.rcSuffixPinyin} marks possession: ${hanzi}${suffix} = “${english}”.`;
@@ -420,26 +736,26 @@
     const grammar = note ? el('p', 'grammar', note) : null;
 
     const foot = el('div', 'foot');
-    const orig = el('span');
-    orig.append('English: ', el('b', null, word.dataset.rcOrig));
-    const showEn = el('button', 'show-en', 'Show English');
-    showEn.type = 'button';
-    showEn.addEventListener('click', () => {
-      closePopover();
-      restoreWord(word);
-      count--;
-    });
-    foot.append(orig, showEn);
+    if (inSentence) {
+      // A word in a translated sentence: back to the sentence, or its English.
+      foot.append(linkButton('Whole sentence', 'show-en link', () => showSentence(inSentence)), linkButton('Show English', 'show-en', () => {
+        closePopover();
+        restoreSentence(inSentence);
+        count--;
+      }));
+    } else {
+      const orig = el('span');
+      orig.append('English: ', el('b', null, word.dataset.rcOrig));
+      foot.append(orig, linkButton('Show English', 'show-en', () => {
+        closePopover();
+        restoreWord(word);
+        count--;
+      }));
+    }
 
     const label = ja ? `JLPT N${6 - level}` : settings.system === 'hsk2' ? `HSK 2.0 · Level ${level}` : `HSK 3.0 · Level ${level === 7 ? '7–9' : level}`;
     const fullPinyin = [word.dataset.rcPrefixPinyin, pinyin, word.dataset.rcSuffixPinyin].filter(Boolean).join(' ');
-    card.append(top, el('div', 'pinyin', fullPinyin), el('span', 'badge', label), list, ...(grammar ? [grammar] : []), foot);
-    root.append(style, card);
-    document.documentElement.append(host);
-    pop = { host, card, word };
-    position();
-    window.addEventListener('scroll', position, true);
-    window.addEventListener('resize', position);
+    openCard(word, `${hanzi} ${pinyin}`, [top, el('div', 'pinyin', fullPinyin), el('span', 'badge', label), list, ...(grammar ? [grammar] : []), foot]);
   }
 
   function position() {
@@ -490,14 +806,16 @@
 
   window.addEventListener('click', (e) => {
     if (pop && e.composedPath().includes(pop.host)) return;
-    const word = e.target instanceof Element ? e.target.closest('.rc-word') : null;
-    if (!word) return closePopover();
+    const target = e.target instanceof Element ? e.target : null;
+    const word = target?.closest('.rc-word');
+    const sentence = word ? null : target?.closest('.rc-sentence');
+    if (!word && !sentence) return closePopover();
     // Words inside links shouldn't navigate.
     e.preventDefault();
     e.stopPropagation();
-    if (pop?.word === word) return closePopover();
-    showPopover(word);
-    word.classList.add('rc-active');
+    if (pop?.word === (word || sentence)) return closePopover();
+    if (word) showPopover(word);
+    else showSentence(sentence);
   }, true);
 
   window.addEventListener('keydown', (e) => {
@@ -512,10 +830,10 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === 'rc-status') {
-      sendResponse({ host: location.hostname, count, running, english: pageLooksEnglish() });
+      sendResponse({ host: location.hostname, count, running, english: pageLooksEnglish(), translator: translatorState, progress: downloadProgress });
     } else if (msg?.type === 'rc-reroll') {
-      apply().then(() => sendResponse({ ok: true }));
-      return true;
+      apply();
+      sendResponse({ ok: true });
     }
   });
 

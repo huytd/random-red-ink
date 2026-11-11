@@ -2,7 +2,7 @@
   "name": "random-red-ink",
   "version": "0.1.0",
   "private": true,
-  "description": "Chrome extension that swaps English words for Chinese (HSK) or Japanese (JLPT) words while you browse.",
+  "description": "Chrome extension that translates English sentences into Chinese (HSK) or Japanese (JLPT) at your level while you browse.",
   "type": "module",
   "scripts": {
     "build:dict": "npm run build:zh && npm run build:ja",
