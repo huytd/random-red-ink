@@ -2,7 +2,7 @@
   "name": "random-red-ink",
   "version": "0.1.0",
   "private": true,
-  "description": "Chrome extension that translates English sentences into Chinese (HSK) or Japanese (JLPT) at your level while you browse.",
+  "description": "Chrome extension that translates English sentences into Chinese (HSK) or Japanese (JLPT) at your level while you browse, with a translation model that runs on your computer.",
   "type": "module",
   "scripts": {
     "build:dict": "npm run build:zh && npm run build:ja",
@@ -10,6 +10,7 @@
     "build:ja": "node scripts/build-dict-ja.mjs",
     "icons": "python3 scripts/make-icons.py",
     "test": "node --test test/*.test.mjs",
-    "pack": "rm -f random-red-ink.zip && zip -qr random-red-ink.zip manifest.json icons src vendor -x '*.DS_Store'"
+    "pack": "rm -f random-red-ink.zip && zip -qr random-red-ink.zip manifest.json icons src vendor -x '*.DS_Store'",
+    "vendor": "npm install --no-save @huggingface/transformers@3.8.1 && cp node_modules/@huggingface/transformers/dist/transformers.min.js node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.wasm vendor/transformers/"
   }
 }

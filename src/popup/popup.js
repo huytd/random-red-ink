@@ -34,116 +34,74 @@ function levelInfo() {
   };
 }
 
-// ---- Translator --------------------------------------------------------------
-// Sentences are translated by Chrome's built-in Translator API in the extension's
-// offscreen document. Its language model has to be downloaded once, and Chrome only starts
-// that after a click, so the popup has the Download button.
+// ---- Translation model -------------------------------------------------------
+// Sentences are translated on the computer by a small ONNX translation model in the
+// extension's offscreen document (src/offscreen/). It's downloaded once, from Hugging
+// Face, when the Download button is clicked; the offscreen document keeps downloading if
+// the popup closes, and tells open tabs when it's done.
 
 const targetLanguage = () => (settings.language === 'ja' ? 'ja' : settings.script === 'traditional' ? 'zh-Hant' : 'zh');
-const translatorOptions = () => ({ sourceLanguage: 'en', targetLanguage: targetLanguage() });
-let translatorAvailability = null; // 'available' | 'downloadable' | 'downloading' | 'unavailable' | 'unsupported' | 'error'
-let downloading = false;
+const MODEL_NAMES = { zh: 'opus-mt-en-zh', 'zh-Hant': 'opus-mt-en-zh', ja: 'FuguMT en-ja' };
+let modelTimer = 0;
 
-async function checkTranslator() {
-  if (typeof self.Translator?.availability !== 'function') return 'unsupported';
+async function modelStatus() {
   try {
-    return await Translator.availability(translatorOptions());
-  } catch {
-    return 'error';
+    return (await chrome.runtime.sendMessage({ type: 'rc-model-status', lang: targetLanguage() })) || { state: 'error' };
+  } catch (e) {
+    return { state: 'error', error: String(e?.message || e) };
   }
 }
 
-// progress: null for none, 'busy' for a moving bar, or 0..1. Chrome may report only 0 and
-// 1, so 0 shows a moving bar too.
-function showTranslator(text, { button = false, progress = null, hint = '' } = {}) {
+function showModel(text, { button = false, progress = null, hint = '' } = {}) {
   $('translator').hidden = !text;
   $('translator-text').textContent = text || '';
   $('translator-download').hidden = !button;
-  $('translator-download').disabled = downloading;
   const bar = $('translator-progress');
   bar.hidden = progress === null;
   if (typeof progress === 'number' && progress > 0) bar.value = progress;
-  else bar.removeAttribute('value');
+  else bar.removeAttribute('value'); // a moving bar until sizes are known
   $('translator-download').parentElement.hidden = !button && progress === null;
   $('translator-hint').hidden = !hint;
   $('translator-hint').textContent = hint;
 }
 
-// The language packs the translator needs, as chrome://on-device-translation-internals
-// names them.
-const packNames = () => `English (en) and ${LANGUAGE_NAMES[settings.language]} (${targetLanguage()})`;
-
 async function renderTranslator() {
-  if (downloading) return;
-  if (settings.mode !== 'sentence' || !settings.enabled) {
-    showTranslator(null);
-    return;
-  }
-  const name = LANGUAGE_NAMES[settings.language];
+  clearTimeout(modelTimer);
+  if (settings.mode !== 'sentence' || !settings.enabled) return showModel(null);
   const target = targetLanguage();
-  translatorAvailability = await checkTranslator();
-  if (downloading || target !== targetLanguage()) return; // changed while checking
-  switch (translatorAvailability) {
-    case 'available': return showTranslator(null);
-    case 'downloadable':
-      return showTranslator(`Sentences are translated on your computer by Chrome. Download its English → ${name} model once to start.`, { button: true });
+  const s = await modelStatus();
+  if (target !== targetLanguage()) return; // changed while asking
+  const name = LANGUAGE_NAMES[settings.language];
+  const size = `${Math.round(s.total || 0)} MB`;
+  switch (s.state) {
+    case 'ready': return showModel(null);
     case 'downloading':
-      return showTranslator(`Chrome is downloading the English → ${name} model. Click Download to follow it; you can close this popup meanwhile.`, { button: true, progress: 'busy' });
-    case 'unavailable': return showTranslator(`Chrome can’t translate English to ${name} on this computer. Switch Replace to Words.`);
-    case 'unsupported': return showTranslator('Sentences need Chrome’s built-in translator (Chrome 138 or later on a computer). Switch Replace to Words.');
-    default: return showTranslator('Chrome’s translator didn’t answer. Try again, or switch Replace to Words.');
+      modelTimer = setTimeout(renderTranslator, 500);
+      return showModel(`Downloading the ${name} translation model… ${Math.round(s.loaded)} of ${size}. You can close this popup.`, { progress: s.loaded / s.total });
+    case 'error':
+      return showModel(`The ${name} translation model didn’t download.`, { button: true, hint: s.error || '' });
+    default:
+      return showModel(`Sentences are translated on your computer by a small ${name} translation model (${MODEL_NAMES[target]}, ${size}). Download it once to start.`, { button: true });
   }
 }
 
-// Tells open tabs waiting for the translator to start.
-async function translatorReady() {
-  const tabs = await chrome.tabs.query({});
-  for (const t of tabs) chrome.tabs.sendMessage(t.id, { type: 'rc-translator-ready' }).catch(() => {});
+async function downloadModel() {
+  $('translator-download').disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'rc-model-download', lang: targetLanguage() });
+  } finally {
+    $('translator-download').disabled = false;
+  }
+  renderTranslator();
 }
 
-function download() {
-  if (typeof self.Translator?.create !== 'function') return;
-  const name = LANGUAGE_NAMES[settings.language];
-  downloading = true;
-  const text = `Downloading the English → ${name} model… Chrome downloads it in the background, so it won’t show in DevTools’ Network panel.`;
-  let progress = 'busy';
-  showTranslator(text, { button: true, progress });
-  // Slow or stuck: Chrome's own page shows the language packs and can install them.
-  const slow = setTimeout(() => {
-    showTranslator(text, {
-      button: true,
-      progress,
-      hint: `Taking a while? Open Chrome’s language packs below and check that ${packNames()} are installing; you can install them there, then click Download again.`,
-    });
-    $('translator-download').disabled = false; // to try again
-  }, 20000);
-  // Called straight from the click, which Chrome requires to start a download.
-  Translator.create({
-    ...translatorOptions(),
-    monitor(m) {
-      m.addEventListener('downloadprogress', (e) => {
-        progress = e.loaded;
-        $('translator-progress').hidden = false;
-        if (e.loaded > 0) $('translator-progress').value = e.loaded;
-        $('translator-text').textContent = e.loaded > 0 && e.loaded < 1 ? `Downloading the English → ${name} model… ${Math.round(e.loaded * 100)}%` : text;
-      });
-    },
-  }).then(async (t) => {
-    clearTimeout(slow);
-    t.destroy?.();
-    downloading = false;
-    showTranslator(null);
-    await translatorReady();
-    setTimeout(refreshStatus, 800);
-  }, (e) => {
-    clearTimeout(slow);
-    downloading = false;
-    showTranslator(`The download didn’t finish: ${e?.name ? `${e.name}: ` : ''}${e?.message || e}`, {
-      button: true,
-      hint: `Try again, or install ${packNames()} on Chrome’s language packs page.`,
-    });
-  });
-}
+// The offscreen document finished a download: refresh, and the page will start.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === 'rc-model-ready') {
+    renderTranslator();
+    setTimeout(refreshStatus, 1500);
+  }
+});
 
 // The slider's setting: sentences and words each keep their own share.
 const frequencyKey = () => (settings.mode === 'sentence' ? 'sentenceFrequency' : 'frequency');
@@ -203,7 +161,7 @@ function render() {
   $('range-few').textContent = sentences ? 'A few sentences' : 'A few words';
   $('range-most').textContent = sentences ? 'Most sentences' : 'Most words';
   $('mode-hint').textContent = sentences
-    ? 'Translates whole sentences with Chrome’s built-in translator, on your device.'
+    ? 'Translates whole sentences with a small translation model that runs on your computer.'
     : 'Swaps single words for their translation, keeping the English word order.';
   $('show-pinyin').checked = settings.showPinyin;
 
@@ -223,10 +181,8 @@ function translatorStatus(s) {
   const name = LANGUAGE_NAMES[settings.language];
   switch (s.translator) {
     case 'checking': return 'Starting the translator…';
-    case 'needs-download': return `Waiting for the ${name} translator`;
-    case 'unsupported': return 'Chrome’s translator isn’t available';
-    case 'unavailable': return `Chrome can’t translate into ${name} here`;
-    case 'error': return 'The translator didn’t start. Reload the page, or switch to Words.';
+    case 'needs-download': return `Waiting for the ${name} translation model`;
+    case 'error': return 'The translation model didn’t start. Reload the page, or switch to Words.';
     default: return null;
   }
 }
@@ -248,12 +204,7 @@ async function refreshStatus() {
     else if (!s.english) $('site-status').textContent = 'This page isn’t in English';
     else if (settings.mode === 'sentence' && translatorStatus(s)) {
       $('site-status').textContent = translatorStatus(s);
-      if (s.translator === 'checking') statusTimer = setTimeout(refreshStatus, 1000);
-      // Downloaded since this tab loaded: start it.
-      if (s.translator === 'needs-download' && translatorAvailability === 'available') {
-        chrome.tabs.sendMessage(tab.id, { type: 'rc-translator-ready' }).catch(() => {});
-        statusTimer = setTimeout(refreshStatus, 1000);
-      }
+      if (s.translator === 'checking' || s.translator === 'needs-download') statusTimer = setTimeout(refreshStatus, 1500);
     } else {
       const unit = settings.mode === 'sentence' ? 'sentence' : 'word';
       $('site-status').textContent = `${s.count} ${unit}${s.count === 1 ? '' : 's'} in ${LANGUAGE_NAMES[settings.language]}`;
@@ -301,8 +252,7 @@ async function main() {
     const others = settings.disabledSites.filter((h) => h !== host);
     update({ disabledSites: e.target.checked ? others : [...others, host] });
   });
-  $('translator-download').addEventListener('click', download);
-  $('translator-packs').addEventListener('click', () => chrome.tabs.create({ url: 'chrome://on-device-translation-internals' }));
+  $('translator-download').addEventListener('click', downloadModel);
   $('reroll').addEventListener('click', async () => {
     if (!tab) return;
     await chrome.tabs.sendMessage(tab.id, { type: 'rc-reroll' }).catch(() => {});

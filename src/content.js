@@ -1,5 +1,5 @@
-// Translates a random share of English sentences into Chinese or Japanese with Chrome's
-// on-device translator, preferring the ones a learner can mostly read at their HSK or JLPT
+// Translates a random share of English sentences into Chinese or Japanese with a small
+// translation model that runs on the computer, preferring the ones a learner can mostly read at their HSK or JLPT
 // level (or, in word mode, swaps single words for their translation). Clicking a sentence
 // or a word in it opens a card with the reading, audio and meanings.
 (() => {
@@ -345,6 +345,15 @@
     return !range.cloneContents().querySelector(BLOCKERS);
   }
 
+  // The queued sentence to translate next: the first one on screen, else the first one.
+  function nextJob() {
+    for (let i = 0; i < jobs.length; i++) {
+      const r = jobs[i].range.getBoundingClientRect();
+      if (r.bottom > 0 && r.top < innerHeight && (r.width || r.height)) return i;
+    }
+    return 0;
+  }
+
   // Translates the queued sentences one at a time and puts each translation in the page.
   async function pump() {
     if (pumping) return;
@@ -352,7 +361,7 @@
     const mine = run;
     try {
       while (jobs.length && running && run === mine) {
-        const job = jobs.shift();
+        const job = jobs.splice(nextJob(), 1)[0];
         let translated = '';
         try {
           translated = (await translate(job.text)).trim();
@@ -420,18 +429,17 @@
 
   // ---- Translator ------------------------------------------------------------
 
-  // Sentences are translated by Chrome's built-in Translator API (Chrome 138+), on the
-  // device, in the extension's offscreen document (src/offscreen/), which the background
-  // worker passes them to. Running it there rather than in the page means the language
-  // model, which needs a click to download, is downloaded once for the extension (with the
-  // popup's Download button) instead of once per website.
-  let translatorState = 'off'; // 'off' | 'checking' | 'ready' | 'needs-download' | 'unsupported' | 'unavailable' | 'error'
+  // Sentences are translated on the computer by a small ONNX translation model in the
+  // extension's offscreen document (src/offscreen/), which the background worker passes
+  // them to. The model is downloaded once, with the popup's Download button.
+  let translatorState = 'off'; // 'off' | 'checking' | 'ready' | 'needs-download' | 'error'
+  let tradMap = null; // simplified -> traditional characters, for traditional Chinese
   let translatorTarget = null; // the language it's ready for
   const translations = new Map(); // "target English" -> translation, for Shuffle
 
   const targetLanguage = (s) => (s.language === 'ja' ? 'ja' : s.script === 'traditional' ? 'zh-Hant' : 'zh');
 
-  const STATES = { ready: 'ready', downloadable: 'needs-download', downloading: 'needs-download', unavailable: 'unavailable', unsupported: 'unsupported' };
+  const STATES = { ready: 'ready', downloadable: 'needs-download', downloading: 'needs-download' };
 
   // Resolves to true once the translator for target is ready.
   async function ensureTranslator(target) {
@@ -455,7 +463,8 @@
     if (!translations.has(key)) {
       const res = await chrome.runtime.sendMessage({ type: 'rc-translate', lang: translatorTarget, text });
       if (!res?.ok) throw new Error(res?.error || 'translation failed');
-      translations.set(key, res.text);
+      if (translatorTarget === 'zh-Hant') tradMap ||= sentences.traditionalMap(dict);
+      translations.set(key, sentences.tidy(res.text, text, dict.lang, translatorTarget === 'zh-Hant' ? tradMap : null));
     }
     return translations.get(key);
   }

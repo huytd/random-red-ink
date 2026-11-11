@@ -169,7 +169,63 @@
     return out;
   }
 
-  const api = { readability, chance, wordIndex, stemIndex, segment, MIN_COVERAGE, MIN_CHANCE, MIN_WORDS, MAX_WORDS };
+  // Simplified to traditional Chinese from the dictionary's word pairs: { words, chars },
+  // whole words first (进口 -> 進口, 周末 -> 週末), and characters by their usual form for
+  // the rest. Counting unchanged pairings too keeps 布 in 布置 as it is.
+  function traditionalMap(dict) {
+    const words = new Map();
+    const counts = new Map();
+    for (const [simp, trad] of dict.words) {
+      if (simp.length !== trad.length) continue;
+      if (simp.length > 1) words.set(simp, trad); // unchanged ones too, so 宣布 isn't 宣佈
+      for (let i = 0; i < simp.length; i++) {
+        const forms = counts.get(simp[i]) || new Map();
+        forms.set(trad[i], (forms.get(trad[i]) || 0) + 1);
+        counts.set(simp[i], forms);
+      }
+    }
+    const chars = new Map();
+    for (const [c, forms] of counts) {
+      const best = [...forms].sort((a, b) => b[1] - a[1])[0][0];
+      if (best !== c) chars.set(c, best);
+    }
+    return { words, chars };
+  }
+
+  function toTraditional(text, { words, chars }) {
+    let out = '';
+    for (let i = 0; i < text.length; ) {
+      let n = Math.min(MAX_WORD_LENGTH, text.length - i);
+      while (n > 1 && !words.has(text.slice(i, i + n))) n--;
+      if (n > 1) {
+        out += words.get(text.slice(i, i + n));
+        i += n;
+      } else {
+        out += chars.get(text[i]) || text[i];
+        i++;
+      }
+    }
+    return out;
+  }
+
+  const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]/u;
+  const FULL = { ',': '，', '?': '？', '!': '！', ':': '：', ';': '；', '.': '。' };
+  const END = { '.': '。', '?': '？', '!': '！' };
+
+  // A translation tidied for the page: Chinese or Japanese punctuation after CJK text
+  // (the models sometimes write "?" or ","), the English sentence's final punctuation if
+  // the model dropped it, and traditional characters when trad (from traditionalMap) is
+  // given.
+  function tidy(text, english, lang, trad = null) {
+    let out = text.trim().replace(/(\S)\s*([,?!:;.])/gu, (m, before, p) => (CJK.test(before) ? before + (p === ',' && lang === 'ja' ? '、' : FULL[p]) : m));
+    out = out.replace(/(\S)\s+(?=[，。？！：；、])/gu, '$1');
+    const end = END[english.trim().slice(-1)];
+    if (end && CJK.test(out.slice(-1))) out += end;
+    if (trad) out = toTraditional(out, trad);
+    return out;
+  }
+
+  const api = { readability, chance, wordIndex, stemIndex, segment, traditionalMap, tidy, MIN_COVERAGE, MIN_CHANCE, MIN_WORDS, MAX_WORDS };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.RC_SENTENCES = api;
 })(globalThis);

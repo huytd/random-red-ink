@@ -10,7 +10,7 @@ await import('../src/sentences.js');
 const zh = globalThis.RC_DICTS.zh;
 const ja = globalThis.RC_DICTS.ja;
 const { createLookup, LEVEL_COL } = globalThis.RC_MATCHER;
-const { chance, wordIndex, stemIndex, segment, MIN_CHANCE } = globalThis.RC_SENTENCES;
+const { chance, wordIndex, stemIndex, segment, traditionalMap, tidy, MIN_CHANCE } = globalThis.RC_SENTENCES;
 const { tag } = globalThis.RC_TAGGER;
 
 const lookups = (level, onlyLevel = false) => ({
@@ -85,4 +85,22 @@ test('finds conjugated Japanese words by their stem', () => {
   assert.equal(show('手伝ってくれますか？'), '[手伝=手伝う]ってくれますか？');
   assert.equal(show('学校に行きます。'), '[学校=学校]に[行=行く]きます。');
   assert.equal(show('ご飯を食べる。'), '[ご飯=御飯]を[食べる=食べる]。');
+});
+
+test('tidies the model\'s punctuation', () => {
+  // opus-mt-en-zh output, as the model writes it.
+  assert.equal(tidy('今天我想告诉你我的朋友', 'Today I want to tell you about my friend.', 'zh'), '今天我想告诉你我的朋友。');
+  assert.equal(tidy('你能帮我找到我的手机吗?', 'Can you help me find my phone?', 'zh'), '你能帮我找到我的手机吗？');
+  assert.equal(tidy('云南地区可能已开始喝茶,因为在那里,茶用于药用目的。', 'x.', 'zh'), '云南地区可能已开始喝茶，因为在那里，茶用于药用目的。');
+  assert.equal(tidy('私たちは朝ご飯を食べ,お茶を飲む', 'We eat breakfast and drink tea.', 'ja'), '私たちは朝ご飯を食べ、お茶を飲む。');
+  // English and numbers keep their punctuation.
+  assert.equal(tidy('我用 Node.js 3.5 版。', 'I use Node.js 3.5.', 'zh'), '我用 Node.js 3.5 版。');
+});
+
+test('turns stray simplified characters into traditional ones', () => {
+  const trad = traditionalMap(zh);
+  // As the dictionary writes them: 上周 and 宣布 are the same in traditional characters.
+  assert.equal(tidy('政府上周宣布了新的进口限制。', 'x.', 'zh', trad), '政府上周宣布了新的進口限制。');
+  assert.equal(tidy('我们周末学习汉语。', 'x.', 'zh', trad), '我們週末學習漢語。');
+  assert.equal(tidy('你能幫我找到我的手機嗎?', 'x?', 'zh', trad), '你能幫我找到我的手機嗎？');
 });

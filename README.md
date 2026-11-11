@@ -8,7 +8,7 @@ Learn Chinese or Japanese while you browse. On English pages, this Chrome extens
 
 Sentences made of words at your level are picked most often. The second sentence above is mostly above HSK 3, so at that level it's picked less often; from HSK 4 it's picked as often as the others.
 
-Sentences are translated on your computer by Chrome's built-in [Translator API](https://developer.chrome.com/docs/ai/translator-api) (Chrome 138 or later), so page text never leaves the device. There's also a **Words** mode, which swaps single words and keeps the English word order:
+Sentences are translated on your computer by a small translation model ([opus-mt-en-zh](https://huggingface.co/Helsinki-NLP/opus-mt-en-zh) for Chinese, [FuguMT](https://huggingface.co/staka/fugumt-en-ja) for Japanese) running in the extension, so page text never leaves the device. The model is downloaded once, about 120 MB for Chinese or 150 MB for Japanese. There's also a **Words** mode, which swaps single words and keeps the English word order:
 
 > Today I want to 告诉 you about 我的 朋友. We like to 吃 rice and 喝 茶 in the morning.
 
@@ -25,7 +25,7 @@ With the extension off:
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and pick this folder.
 3. Pin the extension and open any English page.
-4. Open the popup and click **Download** to set up Chrome's translator for your language (once). Chrome downloads the language packs itself, so the download doesn't show in DevTools. If it doesn't finish, open **Chrome's language packs** in the popup (`chrome://on-device-translation-internals`), install English and Chinese (`zh`, or `zh-Hant` for traditional characters) or Japanese (`ja`) there, and click **Download** again.
+4. Open the popup and click **Download** to get the translation model for your language (once; it keeps downloading if you close the popup). Open tabs start translating when it's done.
 
 ## Settings (toolbar popup)
 
@@ -60,7 +60,11 @@ Press Esc or click anywhere else to close the card.
 
 ## How it works
 
-- **Sentences** – each paragraph is split into sentences by [compromise](https://github.com/spencermountain/compromise) (so "Mr. Smith went home." stays one sentence). A sentence with 4–30 words can be picked. When at least 60% of its content words (not grammar words or names) have a translation at your level, found with the word matcher described below, it's picked at the slider's rate; harder sentences are picked less often, down to a quarter of that rate, since at HSK 1 hardly any real sentence is that easy. `src/sentences.js` has the rules. Sentences with buttons, images, code or line breaks inside are left alone, as replacing them would break those. Links inside a translated sentence come back with **Show English**. Picked sentences go one at a time, through the background worker, to Chrome's on-device translator (`Translator.create({ sourceLanguage: 'en', targetLanguage: 'zh' | 'zh-Hant' | 'ja' })`) running in the extension's offscreen document (`src/offscreen/`). Running it there rather than in the page means the language model is set up once for the extension rather than once per website: Chrome only starts a model download after a click, so the popup shows a **Download** button the first time, and open tabs start translating as soon as it's done. The translation is split into words with `Intl.Segmenter`, and the words in the HSK or JLPT list become clickable. Japanese verbs and adjectives are found by their stem (飲 of 飲みます is 飲む, 食べ of 食べました is 食べる). Up to 60 sentences per page are translated.
+- **Sentences** – each paragraph is split into sentences by [compromise](https://github.com/spencermountain/compromise) (so "Mr. Smith went home." stays one sentence). A sentence with 4–30 words can be picked. When at least 60% of its content words (not grammar words or names) have a translation at your level, found with the word matcher described below, it's picked at the slider's rate; harder sentences are picked less often, down to a quarter of that rate, since at HSK 1 hardly any real sentence is that easy. `src/sentences.js` has the rules. Sentences with buttons, images, code or line breaks inside are left alone, as replacing them would break those. Links inside a translated sentence come back with **Show English**. Picked sentences go one at a time, those on screen first, through the background worker to the extension's offscreen document (`src/offscreen/`). There [transformers.js](https://github.com/huggingface/transformers.js) runs the translation model with ONNX Runtime's WebAssembly build (both in `vendor/transformers/`, since extensions can't load code from elsewhere), on up to 4 threads:
+  - Chinese: [Helsinki-NLP/opus-mt-en-zh](https://huggingface.co/Helsinki-NLP/opus-mt-en-zh) (Marian, 8-bit ONNX from [Xenova/opus-mt-en-zh](https://huggingface.co/Xenova/opus-mt-en-zh)), told to write simplified or traditional characters with `>>cmn_Hans<<` or `>>cmn_Hant<<`. Simplified characters it leaves in traditional text are converted with the dictionary's word pairs.
+  - Japanese: [staka/fugumt-en-ja](https://huggingface.co/staka/fugumt-en-ja) (Marian, 8-bit ONNX from [Kadonox/fugumt-en-ja-onnx](https://huggingface.co/Kadonox/fugumt-en-ja-onnx)).
+
+  The model files come from Hugging Face at pinned revisions when you click **Download** and are kept in the browser's cache for the extension. A sentence takes about half a second to a second. Small LLMs (Qwen2.5-0.5B, Qwen3-0.6B) and NLLB-200 were tried too: the LLMs answered questions instead of translating them and changed meanings, and NLLB was slower and added facts ("the government" became "India's government"). The translation is split into words with `Intl.Segmenter`, and the words in the HSK or JLPT list become clickable. Japanese verbs and adjectives are found by their stem (飲 of 飲みます is 飲む, 食べ of 食べました is 食べる). Up to 60 sentences per page are translated.
 - **Part of speech** – each paragraph goes through [compromise](https://github.com/spencermountain/compromise) (MIT, `vendor/compromise.js`), an English tagger that runs in the page. It tells the verb in "**Building** apps" from the noun in "the **building**", and it gives each word's base form, so irregular forms like bought, children and went work too. It also flags names and brands (Bill, Apple), phrasal verbs ("gave **up**"), possessives, comparatives and dates, and works out what "they" refers to.
 - **Dictionaries** – each language combines an English-first dictionary, which lists an English word's translations by part of speech and most common sense first, with the target words' own glosses:
   - Chinese, `src/dict-zh.js` from `scripts/build-dict-zh.mjs`: [ECDICT](https://github.com/skywind3000/ECDICT) (water: *n.* 水; *v.* 浇水) and [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary) (11,368 HSK words with levels, pinyin, CC-CEDICT meanings and measure words)
@@ -90,13 +94,14 @@ node scripts/build-dict-ja.mjs jlpt-dir jmdict-eng.json ejdict-dir
 NO_OVERRIDES=1 npm run build:zh                        # see the output without overrides-zh.mjs
 npm run icons            # regenerate icons/ (needs Python + Pillow and Noto Sans CJK)
 npm run pack             # zip for the Chrome Web Store
+npm run vendor           # update vendor/transformers/ from @huggingface/transformers (version in package.json)
 ```
 
 After editing files, click the reload button on the extension in `chrome://extensions` and refresh the tab.
 
 ## Known limitations
 
-- Sentences need Chrome's built-in Translator API (Chrome 138 or later on desktop). Where it's missing, or Chrome can't translate into the chosen language on the device, the popup says so; switch to **Words**.
+- The translation models are small, so translations are sometimes off, especially for long or technical sentences and headings. Click **Show English** to check.
 - Machine translation can use words above your level even when the English is simple. The level decides which sentences are picked, not which words the translator chooses; click a word to see its level.
 - Links inside a translated sentence can't be followed until you click **Show English**.
 
@@ -111,3 +116,5 @@ After editing files, click the reload button on the extension in `chrome://exten
 - EJDict-hand: public domain (CC0)
 - JMdict: © the Electronic Dictionary Research and Development Group, used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). `src/dict-ja.js` contains JMdict glosses and parts of speech and is shared under the same license.
 - The JLPT lists are based on Jonathan Waller's lists at [tanos.co.uk](http://www.tanos.co.uk/jlpt/) (CC BY).
+- transformers.js: Apache-2.0; ONNX Runtime: MIT (`vendor/transformers/`).
+- Translation models, downloaded at runtime, not part of this repository: opus-mt-en-zh by Helsinki-NLP, Apache-2.0 (per its model card); FuguMT en-ja by staka, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
