@@ -94,6 +94,8 @@ button { font: inherit; color: inherit; }
 }
 .primary:disabled { opacity: .6; cursor: default; }
 .translator progress { flex: 1; height: 6px; accent-color: var(--accent); }
+.translator .hint { margin: 10px 0 0; }
+#translator-packs { margin-top: 8px; font-size: 12px; }
 
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { margin: 0; accent-color: var(--accent); width: 15px; height: 15px; }

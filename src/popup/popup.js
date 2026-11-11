@@ -53,15 +53,25 @@ async function checkTranslator() {
   }
 }
 
-function showTranslator(text, { button = false, progress = null } = {}) {
+// progress: null for none, 'busy' for a moving bar, or 0..1. Chrome may report only 0 and
+// 1, so 0 shows a moving bar too.
+function showTranslator(text, { button = false, progress = null, hint = '' } = {}) {
   $('translator').hidden = !text;
   $('translator-text').textContent = text || '';
   $('translator-download').hidden = !button;
   $('translator-download').disabled = downloading;
-  $('translator-progress').hidden = progress === null;
+  const bar = $('translator-progress');
+  bar.hidden = progress === null;
+  if (typeof progress === 'number' && progress > 0) bar.value = progress;
+  else bar.removeAttribute('value');
   $('translator-download').parentElement.hidden = !button && progress === null;
-  if (progress !== null) $('translator-progress').value = progress;
+  $('translator-hint').hidden = !hint;
+  $('translator-hint').textContent = hint;
 }
+
+// The language packs the translator needs, as chrome://on-device-translation-internals
+// names them.
+const packNames = () => `English (en) and ${LANGUAGE_NAMES[settings.language]} (${targetLanguage()})`;
 
 async function renderTranslator() {
   if (downloading) return;
@@ -76,8 +86,9 @@ async function renderTranslator() {
   switch (translatorAvailability) {
     case 'available': return showTranslator(null);
     case 'downloadable':
-    case 'downloading':
       return showTranslator(`Sentences are translated on your computer by Chrome. Download its English → ${name} model once to start.`, { button: true });
+    case 'downloading':
+      return showTranslator(`Chrome is downloading the English → ${name} model. Click Download to follow it; you can close this popup meanwhile.`, { button: true, progress: 'busy' });
     case 'unavailable': return showTranslator(`Chrome can’t translate English to ${name} on this computer. Switch Replace to Words.`);
     case 'unsupported': return showTranslator('Sentences need Chrome’s built-in translator (Chrome 138 or later on a computer). Switch Replace to Words.');
     default: return showTranslator('Chrome’s translator didn’t answer. Try again, or switch Replace to Words.');
@@ -94,22 +105,43 @@ function download() {
   if (typeof self.Translator?.create !== 'function') return;
   const name = LANGUAGE_NAMES[settings.language];
   downloading = true;
-  showTranslator(`Downloading the English → ${name} model…`, { button: true, progress: 0 });
+  const text = `Downloading the English → ${name} model… Chrome downloads it in the background, so it won’t show in DevTools’ Network panel.`;
+  let progress = 'busy';
+  showTranslator(text, { button: true, progress });
+  // Slow or stuck: Chrome's own page shows the language packs and can install them.
+  const slow = setTimeout(() => {
+    showTranslator(text, {
+      button: true,
+      progress,
+      hint: `Taking a while? Open Chrome’s language packs below and check that ${packNames()} are installing; you can install them there, then click Download again.`,
+    });
+    $('translator-download').disabled = false; // to try again
+  }, 20000);
   // Called straight from the click, which Chrome requires to start a download.
   Translator.create({
     ...translatorOptions(),
     monitor(m) {
-      m.addEventListener('downloadprogress', (e) => showTranslator(`Downloading the English → ${name} model… ${Math.round(e.loaded * 100)}%`, { button: true, progress: e.loaded }));
+      m.addEventListener('downloadprogress', (e) => {
+        progress = e.loaded;
+        $('translator-progress').hidden = false;
+        if (e.loaded > 0) $('translator-progress').value = e.loaded;
+        $('translator-text').textContent = e.loaded > 0 && e.loaded < 1 ? `Downloading the English → ${name} model… ${Math.round(e.loaded * 100)}%` : text;
+      });
     },
   }).then(async (t) => {
+    clearTimeout(slow);
     t.destroy?.();
     downloading = false;
     showTranslator(null);
     await translatorReady();
     setTimeout(refreshStatus, 800);
   }, (e) => {
+    clearTimeout(slow);
     downloading = false;
-    showTranslator(`The download didn’t finish (${e?.message || e}). Try again.`, { button: true });
+    showTranslator(`The download didn’t finish: ${e?.name ? `${e.name}: ` : ''}${e?.message || e}`, {
+      button: true,
+      hint: `Try again, or install ${packNames()} on Chrome’s language packs page.`,
+    });
   });
 }
 
@@ -270,6 +302,7 @@ async function main() {
     update({ disabledSites: e.target.checked ? others : [...others, host] });
   });
   $('translator-download').addEventListener('click', download);
+  $('translator-packs').addEventListener('click', () => chrome.tabs.create({ url: 'chrome://on-device-translation-internals' }));
   $('reroll').addEventListener('click', async () => {
     if (!tab) return;
     await chrome.tabs.sendMessage(tab.id, { type: 'rc-reroll' }).catch(() => {});

@@ -25,7 +25,7 @@ With the extension off:
 1. Open `chrome://extensions` and turn on **Developer mode**.
 2. Click **Load unpacked** and pick this folder.
 3. Pin the extension and open any English page.
-4. Open the popup and click **Download** to set up Chrome's translator for your language (once).
+4. Open the popup and click **Download** to set up Chrome's translator for your language (once). Chrome downloads the language packs itself, so the download doesn't show in DevTools. If it doesn't finish, open **Chrome's language packs** in the popup (`chrome://on-device-translation-internals`), install English and Chinese (`zh`, or `zh-Hant` for traditional characters) or Japanese (`ja`) there, and click **Download** again.
 
 ## Settings (toolbar popup)
 
