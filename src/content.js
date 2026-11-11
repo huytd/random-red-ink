@@ -33,7 +33,7 @@
 
   let settings = null;
   let lookup = null;
-  let lookups = null; // sentence mode: { all, fresh } for RC_SENTENCES.readable
+  let lookups = null; // sentence mode: { all, fresh } for RC_SENTENCES.chance
   let wordIdx = null; // sentence mode: dictionary words by spelling, for RC_SENTENCES.segment
   let stems = null; // and Japanese stems
   let scanned = new WeakSet(); // text nodes already considered
@@ -276,16 +276,20 @@
 
   // ---- Sentences -------------------------------------------------------------
 
-  // Sentences that contain one of these stay English: links and controls would stop
-  // working, and images or line breaks would be lost.
-  const BLOCKERS = 'a, img, picture, svg, video, audio, iframe, input, button, select, textarea, br, code, kbd, .rc-word, .rc-sentence';
+  // Sentences that contain one of these stay English: controls would stop working, and
+  // images, code or line breaks would be lost. Links are fine: they come back with the
+  // English.
+  const BLOCKERS = 'img, picture, svg, video, audio, iframe, input, button, select, textarea, br, code, kbd, .rc-word, .rc-sentence';
   const originals = new WeakMap(); // .rc-sentence -> the English it replaced (DocumentFragment)
   let jobs = []; // { range, text } waiting for the translator, in page order
   let pumping = false;
-  const squash = (s) => s.replace(/\s+/g, '');
+  // Letters and digits only: text nodes with just punctuation (the ", " between two links)
+  // aren't collected, so the joined text can lack some of the page's commas.
+  const squash = (s) => s.replace(/[^\p{L}\p{N}]+/gu, '');
 
-  // Picks the readable sentences in a block and queues them for translation. A sentence
-  // can run across several text nodes ("I <b>really</b> like tea."), so each is a Range.
+  // Picks sentences in a block, easy ones more often, and queues them for translation. A
+  // sentence can run across several text nodes ("I <b>really</b> like tea."), so each is
+  // a Range.
   function processSentences(group) {
     for (const n of group.nodes) scanned.add(n);
     const texts = group.nodes.map((n) => n.nodeValue);
@@ -315,8 +319,8 @@
       while (end > start && /\s/.test(joined[end - 1])) end--;
       const text = joined.slice(start, end);
       const mine = tags.filter((t) => t.start >= start && t.end <= end).map((t) => ({ ...t, start: t.start - start, end: t.end - start }));
-      if (!sentences.readable(text, mine, lookups)) continue;
-      if (Math.random() * 100 >= settings.sentenceFrequency) continue;
+      // Easy sentences are picked at the slider's rate, harder ones less often.
+      if (Math.random() * 100 >= settings.sentenceFrequency * sentences.chance(text, mine, lookups)) continue;
       const a = nodeAt(start);
       const b = nodeAt(end - 1);
       const range = document.createRange();
@@ -337,7 +341,7 @@
     if (!range.startContainer.isConnected || squash(range.toString()) !== squash(text)) return false;
     const common = range.commonAncestorContainer;
     const el = common.nodeType === Node.ELEMENT_NODE ? common : common.parentElement;
-    if (!el || el.closest('a, [role="button"], [role="link"], .rc-sentence, .rc-word') || skippedElement(el)) return false;
+    if (!el || el.closest('[role="button"], .rc-sentence, .rc-word') || skippedElement(el)) return false;
     return !range.cloneContents().querySelector(BLOCKERS);
   }
 
@@ -508,8 +512,8 @@
     const level = ja ? settings.jlptLevel : settings.level;
     lookup = createLookup(dict, { system, level, onlyLevel: settings.onlyLevel });
     if (settings.mode === 'sentence') {
-      // A sentence is readable when most of its words are at or below the level; with
-      // "only new words", it also needs a word introduced at the level.
+      // How readable a sentence is depends on how many of its words are at or below the
+      // level; with "only new words", it also needs a word introduced at the level.
       lookups = {
         all: createLookup(dict, { system, level, onlyLevel: false }),
         fresh: settings.onlyLevel ? lookup : null,

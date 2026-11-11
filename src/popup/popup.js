@@ -75,8 +75,8 @@ function render() {
   const added = sizes[n] - (n ? sizes[n - 1] : 0);
   if (sentences) {
     $('level-hint').textContent = settings.onlyLevel
-      ? `Picks sentences mostly made of the ${sizes[n].toLocaleString()} words up to this level, with at least one of the ${added.toLocaleString()} it introduces.`
-      : `Picks sentences mostly made of the ${sizes[n].toLocaleString()} words of ${info.range(level)}.`;
+      ? `Prefers sentences made of the ${sizes[n].toLocaleString()} words up to this level, with at least one of the ${added.toLocaleString()} it introduces.`
+      : `Prefers sentences made of the ${sizes[n].toLocaleString()} words of ${info.range(level)}.`;
   } else {
     $('level-hint').textContent = settings.onlyLevel
       ? `Uses the ${added.toLocaleString()} words introduced at this level.`
@@ -88,7 +88,7 @@ function render() {
   setRadio($('mode'), settings.mode);
   $('frequency').value = settings[frequencyKey()];
   $('frequency-value').textContent = `${settings[frequencyKey()]}%`;
-  $('frequency-label').textContent = sentences ? 'Share of readable sentences' : 'Share of words';
+  $('frequency-label').textContent = sentences ? 'Share of sentences' : 'Share of words';
   $('range-few').textContent = sentences ? 'A few sentences' : 'A few words';
   $('range-most').textContent = sentences ? 'Most sentences' : 'Most words';
   $('mode-hint').textContent = sentences

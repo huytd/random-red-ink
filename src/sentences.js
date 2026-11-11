@@ -5,9 +5,12 @@
 (function (root) {
   'use strict';
 
-  // Share of a sentence's content words (not grammar words or names) that must have a
-  // translation at the learner's level.
+  // A sentence is easy enough when this share of its content words (not grammar words or
+  // names) has a translation at the learner's level. Harder sentences are picked less
+  // often, down to MIN_CHANCE, rather than never: at HSK 1 hardly any real sentence is
+  // easy enough.
   const MIN_COVERAGE = 0.6;
+  const MIN_CHANCE = 0.25;
   // Sentences shorter than this are mostly headings, buttons and menu items; longer ones
   // are hard to take in at once.
   const MIN_WORDS = 4;
@@ -28,16 +31,18 @@
     return { words: content.length, known };
   }
 
-  // True when text is a sentence worth translating for this learner: a reasonable length,
-  // mostly made of words they know, and, with lookups.fresh (the "only words new at this
-  // level" lookup), with at least one word new at their level.
-  function readable(text, tags, lookups) {
+  // How likely text is to be translated for this learner, from 0 to 1: 0 for headings,
+  // menus, very long sentences and, with lookups.fresh (the "only words new at this level"
+  // lookup), sentences without a word new at the level; 1 for sentences mostly made of
+  // words at the level; in between for harder ones.
+  function chance(text, tags, lookups) {
     const n = wordCount(text);
-    if (n < MIN_WORDS || n > MAX_WORDS) return false;
-    if (!/[a-z]/.test(text)) return false; // ALL-CAPS banners
+    if (n < MIN_WORDS || n > MAX_WORDS) return 0;
+    if (!/[a-z]/.test(text)) return 0; // ALL-CAPS banners
     const { words, known } = readability(text, tags, lookups.all);
-    if (words < 2 || known / words < MIN_COVERAGE) return false;
-    return !lookups.fresh || root.RC_MATCHER.findMatches(text, lookups.fresh, tags).length > 0;
+    if (words < 2) return 0;
+    if (lookups.fresh && !root.RC_MATCHER.findMatches(text, lookups.fresh, tags).length) return 0;
+    return Math.min(1, MIN_CHANCE + (1 - MIN_CHANCE) * (known / words / MIN_COVERAGE));
   }
 
   // Map from a word as written to its dictionary row, for the words that have a level in
@@ -164,7 +169,7 @@
     return out;
   }
 
-  const api = { readability, readable, wordIndex, stemIndex, segment, MIN_COVERAGE, MIN_WORDS, MAX_WORDS };
+  const api = { readability, chance, wordIndex, stemIndex, segment, MIN_COVERAGE, MIN_CHANCE, MIN_WORDS, MAX_WORDS };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.RC_SENTENCES = api;
 })(globalThis);

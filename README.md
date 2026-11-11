@@ -1,12 +1,12 @@
 # Random Red Ink
 
-Learn Chinese or Japanese while you browse. On English pages, this Chrome extension translates a random share of the sentences you can mostly read at your level (HSK for Chinese, JLPT for Japanese) into real Chinese or Japanese sentences. Click a sentence to hear it and see the English, or click a word in it to see its reading and meanings.
+Learn Chinese or Japanese while you browse. On English pages, this Chrome extension translates a random share of English sentences into real Chinese or Japanese sentences, preferring the ones you can mostly read at your level (HSK for Chinese, JLPT for Japanese). Click a sentence to hear it and see the English, or click a word in it to see its reading and meanings.
 
 > 今天我想告诉你我的朋友。 The government announced new restrictions on imports last week. 我们早上喜欢吃米饭喝茶。
 >
 > 今日は私の友達について話したいです。 The government announced new restrictions on imports last week. 私たちは朝にご飯を食べてお茶を飲むのが好きです。
 
-At HSK 1 the second sentence stays English: most of its words are above the level. At HSK 4 it's translated too.
+Sentences made of words at your level are picked most often. The second sentence above is mostly above HSK 3, so at that level it's picked less often; from HSK 4 it's picked as often as the others.
 
 Sentences are translated on your computer by Chrome's built-in [Translator API](https://developer.chrome.com/docs/ai/translator-api) (Chrome 138 or later), so page text never leaves the device. There's also a **Words** mode, which swaps single words and keeps the English word order:
 
@@ -33,8 +33,8 @@ With the extension off:
 | On/off | Turns the extension on or off everywhere. The site switch pauses it for the current site only. |
 | Learn | 中文 Chinese or 日本語 Japanese. |
 | HSK 3.0 / HSK 2.0 | Chinese only: which syllabus to use. HSK 3.0 (2021) has levels 1–6 plus 7–9; HSK 2.0 has levels 1–6. |
-| Level | HSK 1–9 or JLPT N5–N1. Sentences: picks sentences whose words are mostly at or below this level. Words: uses words up to and including this level. With **Only … new at this level**, a sentence also needs a word that level introduces, and word mode uses only those words. |
-| Replace | **Sentences** (default) translates whole sentences; **Words** swaps single words. The slider sets the percentage of readable sentences that get translated (default 30%), or of translatable words that get replaced (default 15%). |
+| Level | HSK 1–9 or JLPT N5–N1. Sentences: prefers sentences whose words are mostly at or below this level. Words: uses words up to and including this level. With **Only … new at this level**, a sentence also needs a word that level introduces, and word mode uses only those words. |
+| Replace | **Sentences** (default) translates whole sentences; **Words** swaps single words. The slider sets the percentage of easy sentences that get translated (default 30%; harder ones less often), or of translatable words that get replaced (default 15%). |
 | 简体 / 繁體 | Chinese only: simplified or traditional characters. |
 | Show pinyin / furigana above words | Shows pinyin over Chinese words, or kana over the kanji of Japanese words (食(た)べる). In sentences, it's shown over the words found in the dictionary. |
 | Shuffle | Picks a new random set of sentences or words on the current page. |
@@ -59,7 +59,7 @@ Press Esc or click anywhere else to close the card.
 
 ## How it works
 
-- **Sentences** – each paragraph is split into sentences by [compromise](https://github.com/spencermountain/compromise) (so "Mr. Smith went home." stays one sentence). A sentence is picked when it has 4–30 words and at least 60% of its content words (not grammar words or names) have a translation at your level, found with the word matcher described below; `src/sentences.js` has the rules. Sentences with links, buttons, images, code or line breaks inside are left alone, as replacing them would break those. Picked sentences go one at a time to Chrome's on-device translator (`Translator.create({ sourceLanguage: 'en', targetLanguage: 'zh' | 'zh-Hant' | 'ja' })`). The first time, Chrome has to download the language model, and it only starts a download after a click or key press, so the popup asks you to click anywhere on the page. The translation is split into words with `Intl.Segmenter`, and the words in the HSK or JLPT list become clickable. Japanese verbs and adjectives are found by their stem (飲 of 飲みます is 飲む, 食べ of 食べました is 食べる). Up to 60 sentences per page are translated.
+- **Sentences** – each paragraph is split into sentences by [compromise](https://github.com/spencermountain/compromise) (so "Mr. Smith went home." stays one sentence). A sentence with 4–30 words can be picked. When at least 60% of its content words (not grammar words or names) have a translation at your level, found with the word matcher described below, it's picked at the slider's rate; harder sentences are picked less often, down to a quarter of that rate, since at HSK 1 hardly any real sentence is that easy. `src/sentences.js` has the rules. Sentences with buttons, images, code or line breaks inside are left alone, as replacing them would break those. Links inside a translated sentence come back with **Show English**. Picked sentences go one at a time to Chrome's on-device translator (`Translator.create({ sourceLanguage: 'en', targetLanguage: 'zh' | 'zh-Hant' | 'ja' })`). The first time, Chrome has to download the language model, and it only starts a download after a click or key press, so the popup asks you to click anywhere on the page. The translation is split into words with `Intl.Segmenter`, and the words in the HSK or JLPT list become clickable. Japanese verbs and adjectives are found by their stem (飲 of 飲みます is 飲む, 食べ of 食べました is 食べる). Up to 60 sentences per page are translated.
 - **Part of speech** – each paragraph goes through [compromise](https://github.com/spencermountain/compromise) (MIT, `vendor/compromise.js`), an English tagger that runs in the page. It tells the verb in "**Building** apps" from the noun in "the **building**", and it gives each word's base form, so irregular forms like bought, children and went work too. It also flags names and brands (Bill, Apple), phrasal verbs ("gave **up**"), possessives, comparatives and dates, and works out what "they" refers to.
 - **Dictionaries** – each language combines an English-first dictionary, which lists an English word's translations by part of speech and most common sense first, with the target words' own glosses:
   - Chinese, `src/dict-zh.js` from `scripts/build-dict-zh.mjs`: [ECDICT](https://github.com/skywind3000/ECDICT) (water: *n.* 水; *v.* 浇水) and [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary) (11,368 HSK words with levels, pinyin, CC-CEDICT meanings and measure words)
@@ -97,7 +97,7 @@ After editing files, click the reload button on the extension in `chrome://exten
 
 - Sentences need Chrome's built-in Translator API (Chrome 138 or later on desktop). Where it's missing, or Chrome can't translate into the chosen language on the device, the popup says so; switch to **Words**.
 - Machine translation can use words above your level even when the English is simple. The level decides which sentences are picked, not which words the translator chooses; click a word to see its level.
-- Sentences that contain a link stay English, so link-heavy pages (like Wikipedia) get fewer translations.
+- Links inside a translated sentence can't be followed until you click **Show English**.
 
 - The tagger tells parts of speech apart, but not senses within one part of speech: "restrictions were lifted" still gets 提高 (raise) instead of 解除 (remove). Add a fix to `scripts/overrides-zh.mjs` or `scripts/overrides-ja.mjs` and rebuild.
 - The tagger sometimes gets a part of speech wrong, especially in lists: in "read books, watch a movie, and walk to school" it takes *walk* for a noun (散歩, "a stroll").

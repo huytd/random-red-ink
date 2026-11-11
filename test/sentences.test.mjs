@@ -10,7 +10,7 @@ await import('../src/sentences.js');
 const zh = globalThis.RC_DICTS.zh;
 const ja = globalThis.RC_DICTS.ja;
 const { createLookup, LEVEL_COL } = globalThis.RC_MATCHER;
-const { readable, wordIndex, stemIndex, segment } = globalThis.RC_SENTENCES;
+const { chance, wordIndex, stemIndex, segment, MIN_CHANCE } = globalThis.RC_SENTENCES;
 const { tag } = globalThis.RC_TAGGER;
 
 const lookups = (level, onlyLevel = false) => ({
@@ -18,14 +18,18 @@ const lookups = (level, onlyLevel = false) => ({
   fresh: onlyLevel ? createLookup(zh, { system: 'hsk3', level, onlyLevel: true }) : null,
 });
 
-// The sentences in text that a learner with these lookups can mostly read.
-const pick = (text, l) => {
+// [sentence, chance] for each sentence in text.
+const chances = (text, l) => {
   const tags = tag(text);
-  return tags.sentences
-    .map(({ start, end }) => [text.slice(start, end).trim(), tags.filter((t) => t.start >= start && t.end <= end).map((t) => ({ ...t, start: t.start - start, end: t.end - start }))])
-    .filter(([s, t]) => readable(s, t, l))
-    .map(([s]) => s);
+  return tags.sentences.map(({ start, end }) => {
+    const s = text.slice(start, end).trim();
+    return [s, chance(s, tags.filter((t) => t.start >= start && t.end <= end).map((t) => ({ ...t, start: t.start - start, end: t.end - start })), l)];
+  });
 };
+// The sentences in text that a learner with these lookups can mostly read.
+const pick = (text, l) => chances(text, l).filter(([, c]) => c === 1).map(([s]) => s);
+// The sentences that are never picked.
+const never = (text, l) => chances(text, l).filter(([, c]) => c === 0).map(([s]) => s);
 
 test('the tagger splits sentences without breaking at abbreviations', () => {
   const text = 'Hi there. Mr. Smith went to Washington. Did he? Yes!';
@@ -38,12 +42,15 @@ test('picks the sentences a learner can mostly read at their level', () => {
   assert.deepEqual(pick(text, lookups(4)), ['Today I want to tell you about my friend.', 'The government announced new restrictions on imports last week.']);
 });
 
+test('harder sentences are picked less often, but still picked', () => {
+  const [[, hard]] = chances('Researchers found that the protein binds to receptors in the membrane.', lookups(1));
+  assert.ok(hard >= MIN_CHANCE && hard < 0.6, String(hard));
+});
+
 test('skips headings, menus and very long sentences', () => {
-  assert.deepEqual(pick('Home', lookups(6)), []);
-  assert.deepEqual(pick('About us', lookups(6)), []);
-  assert.deepEqual(pick('I LIKE TO EAT RICE EVERY DAY.', lookups(6)), []);
-  const long = `${'I like to eat rice and '.repeat(8)}drink tea.`;
-  assert.deepEqual(pick(long, lookups(6)), []);
+  for (const text of ['Home', 'About us', 'I LIKE TO EAT RICE EVERY DAY.', `${'I like to eat rice and '.repeat(8)}drink tea.`]) {
+    assert.deepEqual(never(text, lookups(6)), [text]);
+  }
 });
 
 test('with "only new words", a sentence needs a word introduced at the level', () => {
@@ -51,6 +58,7 @@ test('with "only new words", a sentence needs a word introduced at the level', (
   const text = 'I like to drink tea every day. We watch movies with our friends on the weekend.';
   assert.deepEqual(pick(text, lookups(2)), ['I like to drink tea every day.', 'We watch movies with our friends on the weekend.']);
   assert.deepEqual(pick(text, lookups(2, true)), ['We watch movies with our friends on the weekend.']);
+  assert.deepEqual(never(text, lookups(2, true)), ['I like to drink tea every day.']);
 });
 
 test('finds dictionary words in a Chinese translation', () => {
