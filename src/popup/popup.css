@@ -85,6 +85,16 @@ button { font: inherit; color: inherit; }
 .hint { margin: 8px 0 10px; color: var(--muted); font-size: 12px; }
 #mode-hint { margin-bottom: 0; }
 
+.translator { border-color: var(--accent); }
+.translator p { margin: 0; }
+.translator-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.primary {
+  border: none; border-radius: 7px; padding: 6px 14px; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font-weight: 600;
+}
+.primary:disabled { opacity: .6; cursor: default; }
+.translator progress { flex: 1; height: 6px; accent-color: var(--accent); }
+
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { margin: 0; accent-color: var(--accent); width: 15px; height: 15px; }
 

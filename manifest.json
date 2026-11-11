@@ -21,7 +21,7 @@
   "background": {
     "service_worker": "src/background.js"
   },
-  "permissions": ["storage", "tts", "scripting"],
+  "permissions": ["storage", "tts", "scripting", "offscreen"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "content_scripts": [
     {

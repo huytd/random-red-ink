@@ -1,7 +1,7 @@
-// Translates a random share of the English sentences a learner can mostly read at their
-// HSK or JLPT level into Chinese or Japanese, with Chrome's on-device translator (or, in
-// word mode, swaps single words for their translation). Clicking a sentence or a word in it
-// opens a card with the reading, audio and meanings.
+// Translates a random share of English sentences into Chinese or Japanese with Chrome's
+// on-device translator, preferring the ones a learner can mostly read at their HSK or JLPT
+// level (or, in word mode, swaps single words for their translation). Clicking a sentence
+// or a word in it opens a card with the reading, audio and meanings.
 (() => {
   'use strict';
   if (globalThis.__randomRedInkLoaded) return;
@@ -420,86 +420,44 @@
 
   // ---- Translator ------------------------------------------------------------
 
-  // Chrome's built-in Translator API (Chrome 138+) translates on the device, so page text
-  // never leaves the computer. Its language model is downloaded once, and starting that
-  // download needs a click or key press on the page.
-  let translatorState = 'off'; // 'off' | 'checking' | 'needs-click' | 'downloading' | 'ready' | 'unsupported' | 'unavailable' | 'error'
-  let downloadProgress = 0;
-  let translator = null; // { target, instance }
-  let gesture = null; // listener waiting for a click to start the download
-  const translations = new Map(); // English -> translation, for Shuffle
-  const GESTURES = ['mousedown', 'pointerup', 'keydown', 'touchend'];
+  // Sentences are translated by Chrome's built-in Translator API (Chrome 138+), on the
+  // device, in the extension's offscreen document (src/offscreen/), which the background
+  // worker passes them to. Running it there rather than in the page means the language
+  // model, which needs a click to download, is downloaded once for the extension (with the
+  // popup's Download button) instead of once per website.
+  let translatorState = 'off'; // 'off' | 'checking' | 'ready' | 'needs-download' | 'unsupported' | 'unavailable' | 'error'
+  let translatorTarget = null; // the language it's ready for
+  const translations = new Map(); // "target English" -> translation, for Shuffle
 
   const targetLanguage = (s) => (s.language === 'ja' ? 'ja' : s.script === 'traditional' ? 'zh-Hant' : 'zh');
 
-  function cancelGesture() {
-    if (!gesture) return;
-    for (const type of GESTURES) window.removeEventListener(type, gesture, true);
-    gesture.resolve(false);
-    gesture = null;
-  }
+  const STATES = { ready: 'ready', downloadable: 'needs-download', downloading: 'needs-download', unavailable: 'unavailable', unsupported: 'unsupported' };
 
-  // Resolves to true once a translator for target is ready, or false if there can't be one.
+  // Resolves to true once the translator for target is ready.
   async function ensureTranslator(target) {
-    cancelGesture();
-    if (translator?.target === target) return true;
-    translator?.instance.destroy?.();
-    translator = null;
-    translations.clear();
-    const T = globalThis.Translator;
-    if (typeof T?.create !== 'function') {
-      translatorState = 'unsupported';
-      return false;
-    }
-    const options = { sourceLanguage: 'en', targetLanguage: target };
+    if (translatorTarget === target && translatorState === 'ready') return true;
+    translatorTarget = null;
     translatorState = 'checking';
-    let availability;
+    let res = null;
     try {
-      availability = await T.availability(options);
+      res = await chrome.runtime.sendMessage({ type: 'rc-translator', lang: target });
     } catch {
-      translatorState = 'error';
-      return false;
+      res = null; // the extension was reloaded since this page loaded
     }
-    if (availability === 'unavailable') {
-      translatorState = 'unavailable';
-      return false;
-    }
-    if (availability === 'available') return createTranslator(T, options);
-    translatorState = 'needs-click';
-    return new Promise((resolve) => {
-      const listener = () => {
-        gesture.resolve = () => {};
-        cancelGesture();
-        createTranslator(T, options).then(resolve);
-      };
-      listener.resolve = resolve;
-      gesture = listener;
-      for (const type of GESTURES) window.addEventListener(type, gesture, true);
-    });
-  }
-
-  async function createTranslator(T, options) {
-    translatorState = 'downloading';
-    downloadProgress = 0;
-    try {
-      const instance = await T.create({
-        ...options,
-        monitor(m) {
-          m.addEventListener('downloadprogress', (e) => { downloadProgress = e.loaded; });
-        },
-      });
-      translator = { target: options.targetLanguage, instance };
-      translatorState = 'ready';
-      return true;
-    } catch {
-      translatorState = 'error';
-      return false;
-    }
+    translatorState = STATES[res?.state] || 'error';
+    if (translatorState !== 'ready') return false;
+    translatorTarget = target;
+    return true;
   }
 
   async function translate(text) {
-    if (!translations.has(text)) translations.set(text, await translator.instance.translate(text));
-    return translations.get(text);
+    const key = `${translatorTarget} ${text}`;
+    if (!translations.has(key)) {
+      const res = await chrome.runtime.sendMessage({ type: 'rc-translate', lang: translatorTarget, text });
+      if (!res?.ok) throw new Error(res?.error || 'translation failed');
+      translations.set(key, res.text);
+    }
+    return translations.get(key);
   }
 
   const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 500 }) : setTimeout(fn, 16));
@@ -597,7 +555,6 @@
     dict = nextDict;
     if (!dict) return;
     if (settings.mode === 'word') {
-      cancelGesture();
       translatorState = 'off';
       return start();
     }
@@ -834,9 +791,13 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === 'rc-status') {
-      sendResponse({ host: location.hostname, count, running, english: pageLooksEnglish(), translator: translatorState, progress: downloadProgress });
+      sendResponse({ host: location.hostname, count, running, english: pageLooksEnglish(), translator: translatorState });
     } else if (msg?.type === 'rc-reroll') {
       apply();
+      sendResponse({ ok: true });
+    } else if (msg?.type === 'rc-translator-ready') {
+      // The popup just downloaded the translator this page was waiting for.
+      if (settings?.mode === 'sentence' && translatorState !== 'ready') apply();
       sendResponse({ ok: true });
     }
   });
